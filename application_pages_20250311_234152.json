@@ -1,0 +1,207 @@
+[
+  {
+    "url": "https://www.mit.edu/admissions-aid",
+    "title": "Admissions + Aid | MIT - Massachusetts Institute of Technology",
+    "university": "MIT",
+    "reasons": [
+      "URL contains pattern '/admission'",
+      "URL contains pattern '/admissions'",
+      "URL contains keyword 'admission'",
+      "URL contains keyword 'admissions'",
+      "Title contains keyword 'admission'",
+      "Title contains keyword 'admissions'",
+      "Meta description contains keyword 'admission'",
+      "Meta description contains keyword 'admissions'",
+      "Meta description contains keyword 'undergraduate'",
+      "Contains application/submit button or link"
+    ],
+    "depth": 6
+  },
+  {
+    "url": "http://news.mit.edu/",
+    "title": "MIT News | Massachusetts Institute of Technology",
+    "university": "MIT",
+    "reasons": [
+      "Contains application/submit button or link"
+    ],
+    "depth": 5
+  },
+  {
+    "url": "https://www.mit.edu/education",
+    "title": "Education | MIT - Massachusetts Institute of Technology",
+    "university": "MIT",
+    "reasons": [
+      "Meta description contains keyword 'undergraduate'"
+    ],
+    "depth": 5
+  },
+  {
+    "url": "http://news.mit.edu/news-clip/automotive-world",
+    "title": "Clip Automotive World MIT: open-source dataset turbocharges AI-driven EV design (Feb. 26) | MIT News | Massachusetts Institute of Technology",
+    "university": "MIT",
+    "reasons": [
+      "Contains application/submit button or link"
+    ],
+    "depth": 5
+  },
+  {
+    "url": "https://news.mit.edu/",
+    "title": "MIT News | Massachusetts Institute of Technology",
+    "university": "MIT",
+    "reasons": [
+      "Contains application/submit button or link"
+    ],
+    "depth": 5
+  },
+  {
+    "url": "http://news.mit.edu/news-clip/bloomberg-news-63",
+    "title": "Clip Bloomberg MIT Harnesses AI to Accelerate Startup Ambitions (Feb. 28) | MIT News | Massachusetts Institute of Technology",
+    "university": "MIT",
+    "reasons": [
+      "Contains application/submit button or link"
+    ],
+    "depth": 5
+  },
+  {
+    "url": "https://www.mit.edu/contact",
+    "title": "Contact | MIT - Massachusetts Institute of Technology",
+    "university": "MIT",
+    "reasons": [
+      "Meta description contains keyword 'apply'",
+      "Meta description contains keyword 'admission'",
+      "Meta description contains keyword 'admissions'",
+      "Meta description contains keyword 'undergraduate'"
+    ],
+    "depth": 5
+  },
+  {
+    "url": "https://calendar.mit.edu/",
+    "title": "Events Calendar - Events Calendar",
+    "university": "MIT",
+    "reasons": [
+      "Contains application/submit button or link"
+    ],
+    "depth": 5
+  },
+  {
+    "url": "https://sfs.mit.edu/undergraduate-financial-aid",
+    "title": "Undergraduate students | MIT Student Financial Services",
+    "university": "MIT",
+    "reasons": [
+      "URL contains pattern '/undergraduate'",
+      "URL contains keyword 'undergraduate'",
+      "Title contains keyword 'undergraduate'",
+      "Contains application/submit button or link"
+    ],
+    "depth": 5
+  },
+  {
+    "url": "http://mitadmissions.org/apply",
+    "title": "Apply | MIT Admissions",
+    "university": "MIT",
+    "reasons": [
+      "URL contains pattern '/apply'",
+      "URL contains keyword 'apply'",
+      "Title contains keyword 'apply'",
+      "Title contains keyword 'admission'",
+      "Title contains keyword 'admissions'",
+      "Meta description contains keyword 'admission'",
+      "Meta description contains keyword 'admissions'",
+      "Meta description contains keyword 'undergraduate'",
+      "Meta description contains keyword 'enroll'",
+      "Form action contains keyword 'admission'",
+      "Form action contains keyword 'admissions'",
+      "Contains application/submit button or link"
+    ],
+    "depth": 5
+  },
+  {
+    "url": "http://mitadmissions.org/apply/process/profile",
+    "title": "First-year class profile | MIT Admissions",
+    "university": "MIT",
+    "reasons": [
+      "URL contains pattern '/apply'",
+      "URL contains keyword 'apply'",
+      "Title contains keyword 'admission'",
+      "Title contains keyword 'admissions'",
+      "Meta description contains keyword 'admission'",
+      "Meta description contains keyword 'admissions'",
+      "Meta description contains keyword 'undergraduate'",
+      "Meta description contains keyword 'enroll'",
+      "Form action contains keyword 'admission'",
+      "Form action contains keyword 'admissions'",
+      "Contains application/submit button or link"
+    ],
+    "depth": 5
+  },
+  {
+    "url": "http://mitadmissions.org/",
+    "title": "MIT Admissions",
+    "university": "MIT",
+    "reasons": [
+      "Title contains keyword 'admission'",
+      "Title contains keyword 'admissions'",
+      "Meta description contains keyword 'admission'",
+      "Meta description contains keyword 'admissions'",
+      "Meta description contains keyword 'undergraduate'",
+      "Meta description contains keyword 'enroll'",
+      "Form action contains keyword 'admission'",
+      "Form action contains keyword 'admissions'",
+      "Contains application/submit button or link"
+    ],
+    "depth": 5
+  },
+  {
+    "url": "https://sfs.mit.edu/graduate-students",
+    "title": "Graduate students | MIT Student Financial Services",
+    "university": "MIT",
+    "reasons": [
+      "Contains application/submit button or link"
+    ],
+    "depth": 5
+  },
+  {
+    "url": "https://careers.mit.edu/",
+    "title": "Jobs at MIT | MIT Human Resources",
+    "university": "MIT",
+    "reasons": [
+      "Contains application/submit button or link"
+    ],
+    "depth": 5
+  },
+  {
+    "url": "http://mitadmissions.org/blogs",
+    "title": "Blogs | MIT Admissions",
+    "university": "MIT",
+    "reasons": [
+      "Title contains keyword 'admission'",
+      "Title contains keyword 'admissions'",
+      "Meta description contains keyword 'admission'",
+      "Meta description contains keyword 'admissions'",
+      "Meta description contains keyword 'undergraduate'",
+      "Meta description contains keyword 'enroll'",
+      "Form action contains keyword 'admission'",
+      "Form action contains keyword 'admissions'",
+      "Contains application/submit button or link"
+    ],
+    "depth": 5
+  },
+  {
+    "url": "https://capd.mit.edu",
+    "title": "Career Advising &amp; Professional Development | MIT",
+    "university": "MIT",
+    "reasons": [
+      "Contains application/submit button or link"
+    ],
+    "depth": 5
+  },
+  {
+    "url": "http://professional.mit.edu/programs",
+    "title": "PROGRAMS | Professional Education",
+    "university": "MIT",
+    "reasons": [
+      "Contains application/submit button or link"
+    ],
+    "depth": 5
+  }
+]

@@ -1,1 +1,8 @@
 .env
+
+old/
+old_async_crawler/
+
+__pycache__/
+
+*.log

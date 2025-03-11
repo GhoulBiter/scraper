@@ -1,0 +1,79 @@
+=== University Application Pages Summary ===
+
+Total URLs visited: 23
+Total application pages found: 18
+
+== Stanford: 17 application pages ==
+1. Stanford University
+   https://www.stanford.edu
+   Reasons: Contains application/submit button or link
+
+2. Admission &#8211; Stanford University
+   https://www.stanford.edu/admission/
+   Reasons: URL contains pattern '/admission', URL contains keyword 'admission', Title contains keyword 'admission', Contains application/submit button or link
+
+3. Stanford University
+   https://www.stanford.edu/
+   Reasons: Contains application/submit button or link
+
+4. Gateway for Students &#8211; Stanford University
+   https://www.stanford.edu/student-gateway
+   Reasons: Contains application/submit button or link
+
+5. Admission &#8211; Stanford University
+   https://www.stanford.edu/admission
+   Reasons: URL contains pattern '/admission', URL contains keyword 'admission', Title contains keyword 'admission', Contains application/submit button or link
+
+6. Gateway for Faculty &#038; Staff &#8211; Stanford University
+   https://www.stanford.edu/faculty-staff-gateway
+   Reasons: Contains application/submit button or link
+
+7. Stanford News &#8211; Stanford University
+   https://www.stanford.edu/news
+   Reasons: Contains application/submit button or link
+
+8. Upcoming Events &#8211; Stanford University
+   https://www.stanford.edu/events
+   Reasons: Contains application/submit button or link
+
+9. Welcome to the Stanford Alumni Association | Stanford Alumni Association
+   http://alumni.stanford.edu/
+   Reasons: Contains application/submit button or link
+
+10. Academics &#8211; Stanford University
+   https://www.stanford.edu/academics
+   Reasons: Meta description contains keyword 'apply', Contains application/submit button or link
+
+11. Research &#8211; Stanford University
+   https://www.stanford.edu/research
+   Reasons: Contains application/submit button or link
+
+12. Health Care &#8211; Stanford University
+   https://www.stanford.edu/health-care
+   Reasons: Contains application/submit button or link
+
+13. Campus Life &#8211; Stanford University
+   https://www.stanford.edu/campus-life
+   Reasons: Contains application/submit button or link
+
+14. Who We Are &#8211; Stanford University
+   https://www.stanford.edu/about
+   Reasons: Contains application/submit button or link
+
+15. Undergrad
+   https://undergrad.stanford.edu/
+   Reasons: Meta description contains keyword 'undergraduate', Contains application/submit button or link
+
+16. Stanford Report
+   https://news.stanford.edu/
+   Reasons: Contains application/submit button or link
+
+17. Office of the Vice Provost for Graduate Education
+   https://vpge.stanford.edu/
+   Reasons: Contains application/submit button or link
+
+== MIT: 1 application pages ==
+1. Admissions + Aid | MIT - Massachusetts Institute of Technology
+   https://www.mit.edu/admissions-aid
+   Reasons: URL contains pattern '/admission', URL contains pattern '/admissions', URL contains keyword 'admission', URL contains keyword 'admissions', Title contains keyword 'admission', Title contains keyword 'admissions', Meta description contains keyword 'admission', Meta description contains keyword 'admissions', Meta description contains keyword 'undergraduate', Contains application/submit button or link
+
