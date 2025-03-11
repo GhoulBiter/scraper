@@ -1,25 +1,33 @@
-#!/usr/bin/env python3
-"""
-Highly focused university application finder.
-"""
 import asyncio
 import aiohttp
-import logging
 import signal
 import time
 import json
 import re
 import sys
+import os
 from urllib.parse import urlparse, urljoin, parse_qs
 from datetime import datetime
+from loguru import logger
+import openai
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler("crawler_new.log"), logging.StreamHandler()],
+# Configure OpenAI
+openai.api_key = os.getenv("OPENAI_API_KEY")
+if not openai.api_key:
+    print("ERROR: OPENAI_API_KEY environment variable not set")
+    sys.exit(1)
+
+# Configure Loguru
+logger.remove()  # Remove default handler
+logger.add(
+    sys.stderr,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
 )
-logger = logging.getLogger(__name__)
+logger.add(
+    "crawler.log",
+    rotation="10 MB",
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
+)
 
 
 # Configuration
@@ -27,18 +35,30 @@ class Config:
     # List of seed universities to crawl
     SEED_UNIVERSITIES = [
         {"name": "MIT", "base_url": "https://www.mit.edu", "domain": "mit.edu"},
-        # {
-        #     "name": "Stanford",
-        #     "base_url": "https://www.stanford.edu",
-        #     "domain": "stanford.edu",
-        # },
+        {
+            "name": "Stanford",
+            "base_url": "https://www.stanford.edu",
+            "domain": "stanford.edu",
+        },
     ]
 
+    # Known admission subdomains (to add as seeds)
+    ADMISSION_SUBDOMAINS = {
+        "mit.edu": ["admissions.mit.edu", "apply.mit.edu"],
+        "stanford.edu": [
+            "admission.stanford.edu",
+            "apply.stanford.edu",
+            "admissions.stanford.edu",
+            "undergrad.stanford.edu",
+        ],
+    }
+
     # Crawling settings
-    MAX_DEPTH = 6
+    MAX_DEPTH = 10  # Increased from 7 to ensure we reach deeper pages
+    MAX_ADMISSION_DEPTH = 15  # Special deeper crawl for admission-related domains
     REQUEST_TIMEOUT = 10
     REQUEST_DELAY = 1
-    MAX_URLS_PER_DOMAIN = 300
+    MAX_URLS_PER_DOMAIN = 500  # Increased from 300 to explore more
     MAX_TOTAL_URLS = 10000
     NUM_WORKERS = 12
 
@@ -54,10 +74,45 @@ class Config:
         "register",
         "portal",
         "submit",
+        "first-year",
+        "transfer",
+        "applicant",
+        "prospective",
     ]
 
-    # High-priority URL patterns
-    HIGH_PRIORITY_PATTERNS = ["/apply", "/admission", "/admissions", "/undergraduate"]
+    # Direct application form indicators
+    APPLICATION_FORM_INDICATORS = [
+        "start application",
+        "begin application",
+        "submit application",
+        "create account",
+        "application form",
+        "apply now",
+        "start your application",
+        "application status",
+        "application portal",
+        "common app",
+        "common application",
+        "coalition app",
+    ]
+
+    # High-priority URL patterns - more specific patterns first
+    HIGH_PRIORITY_PATTERNS = [
+        "/apply/first-year",
+        "/apply/transfer",
+        "/apply/freshman",
+        "/apply/undergraduate",
+        "/apply/online",
+        "/admission/apply",
+        "/admission/application",
+        "/admission/first-year",
+        "/admission/undergraduate",
+        "/admissions/apply",
+        "/apply",
+        "/admission",
+        "/admissions",
+        "/undergraduate",
+    ]
 
     # URL patterns to exclude
     EXCLUDED_PATTERNS = [
@@ -79,6 +134,20 @@ class Config:
         r"/rss/",
         r"/login",
         r"/accounts/",
+        r"/alumni/",
+        r"/giving/",
+        r"/support/",
+        r"/donate/",
+        r"/covid",
+        r"/research/",
+        r"/athletics/",
+        r"/sports/",
+        r"/about/",
+        r"/contact/",
+        r"/privacy/",
+        r"/terms/",
+        r"/campus-map/",
+        r"/campus-tour/",
     ]
 
     # File extensions to exclude
@@ -107,15 +176,27 @@ class Config:
         ".mov",
     ]
 
+    # OpenAI settings
+    MODEL_NAME = "gpt-4o-mini"
+    MAX_EVAL_BATCH = 10  # Evaluate this many URLs in one batch
+    MAX_CONCURRENT_API_CALLS = 5  # Maximum concurrent API calls
+
 
 # Global state
 visited_urls = set()
 domain_visit_counts = {}
 found_applications = []
+evaluated_applications = []
 url_queue = asyncio.Queue()
 crawler_running = True
 total_urls_visited = 0
 total_urls_queued = 0
+
+# Keep track of admission-related domains for higher depth crawling
+admission_related_domains = set()
+
+# API rate limiting
+api_semaphore = asyncio.Semaphore(Config.MAX_CONCURRENT_API_CALLS)
 
 
 # Signal handlers for graceful shutdown
@@ -191,18 +272,40 @@ def normalize_url(url):
 
 def get_url_priority(url, university):
     """Determine priority for a URL (lower is higher priority)."""
-    priority = 10  # Default priority
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+    path = parsed.path.lower()
 
-    # Check for high-priority patterns
-    path = urlparse(url).path.lower()
-    if any(pattern in path for pattern in Config.HIGH_PRIORITY_PATTERNS):
-        priority = 1
+    # Highest priority: Look for exact application paths
+    if any(
+        pattern in path
+        for pattern in ["/apply/first-year", "/admission/apply", "/apply/undergraduate"]
+    ):
+        return 0
 
-    # Check for application keywords in path
+    # Second highest: Admission subdomains with application paths
+    if ("admission" in domain or "apply" in domain or "undergrad" in domain) and any(
+        p in path
+        for p in ["/apply", "/admission", "/application", "/portal", "/first-year"]
+    ):
+        return 1
+
+    # Third highest: General admission subdomains
+    if any(x in domain for x in ["admission", "apply", "undergrad", "freshman"]):
+        return 2
+
+    # Fourth highest: Important paths on any domain
+    for i, pattern in enumerate(Config.HIGH_PRIORITY_PATTERNS):
+        if pattern in path:
+            return 3 + (i * 0.1)  # Small increments to maintain ordering of patterns
+
+    # Fifth highest: URLs with application keywords in path
     if any(keyword in path for keyword in Config.APPLICATION_KEYWORDS):
-        priority = 2
+        return 5
 
-    return priority
+    # Default priority - consider depth from homepage
+    segments = [s for s in path.split("/") if s]
+    return 10 + len(segments)
 
 
 def is_application_page(url, html, title=""):
@@ -211,24 +314,45 @@ def is_application_page(url, html, title=""):
         return False, []
 
     reasons = []
+    score = 0  # Track a confidence score
 
-    # Check URL for application-related patterns
-    path = urlparse(url).path.lower()
+    # Parse URL components
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+    path = parsed.path.lower()
+
+    # Domain-level checks (subdomain indicates strong likelihood)
+    if any(x in domain for x in ["admission", "apply", "applicant", "undergrad"]):
+        reasons.append(f"URL subdomain suggests application page: {domain}")
+        score += 3
+
+    # Path-level checks - give higher weight to specific patterns
     for pattern in Config.HIGH_PRIORITY_PATTERNS:
         if pattern in path:
-            reasons.append(f"URL contains pattern '{pattern}'")
+            reasons.append(f"URL contains high-priority pattern '{pattern}'")
+            score += 2
 
     # Check for application keywords in URL
     for keyword in Config.APPLICATION_KEYWORDS:
         if keyword in path:
             reasons.append(f"URL contains keyword '{keyword}'")
+            score += 1
 
-    # Check title for application keywords
+    # Check title for application keywords - strong indicator
     if title:
         title_lower = title.lower()
         for keyword in Config.APPLICATION_KEYWORDS:
             if keyword in title_lower:
                 reasons.append(f"Title contains keyword '{keyword}'")
+                score += 2
+
+        # Check for direct application indicators in title
+        for indicator in Config.APPLICATION_FORM_INDICATORS:
+            if indicator in title_lower:
+                reasons.append(
+                    f"Title contains application form indicator '{indicator}'"
+                )
+                score += 3
 
     # Check meta description for application keywords
     meta_desc_match = re.search(
@@ -241,6 +365,15 @@ def is_application_page(url, html, title=""):
         for keyword in Config.APPLICATION_KEYWORDS:
             if keyword in meta_desc:
                 reasons.append(f"Meta description contains keyword '{keyword}'")
+                score += 1
+
+        # Check for direct application indicators in meta description
+        for indicator in Config.APPLICATION_FORM_INDICATORS:
+            if indicator in meta_desc:
+                reasons.append(
+                    f"Meta description contains application form indicator '{indicator}'"
+                )
+                score += 2
 
     # Check for form with application-related attributes
     form_action_matches = re.findall(
@@ -251,17 +384,37 @@ def is_application_page(url, html, title=""):
         for keyword in Config.APPLICATION_KEYWORDS:
             if keyword in action_lower:
                 reasons.append(f"Form action contains keyword '{keyword}'")
+                score += 3
 
     # Check for application-related buttons or links
-    apply_button_match = re.search(
-        r"<(a|button)[^>]*>(.*?apply.*?|.*?application.*?|.*?submit.*?)</(a|button)>",
+    for indicator in Config.APPLICATION_FORM_INDICATORS:
+        pattern = re.escape(indicator)
+        if re.search(
+            f"<(a|button)[^>]*>(.*?{pattern}.*?)</(a|button)>",
+            html,
+            re.IGNORECASE,
+        ):
+            reasons.append(f"Contains application button/link with text '{indicator}'")
+            score += 4
+
+    # Check for Common App/Coalition App references (strong indicators)
+    if re.search(
+        r"common\s*app(lication)?|coalition\s*app(lication)?", html, re.IGNORECASE
+    ):
+        reasons.append("Page references Common App or Coalition App")
+        score += 4
+
+    # Check for login/authentication elements specifically for applicants
+    if re.search(
+        r"applicant\s*login|application\s*login|application\s*portal",
         html,
         re.IGNORECASE,
-    )
-    if apply_button_match:
-        reasons.append("Contains application/submit button or link")
+    ):
+        reasons.append("Page contains applicant login elements")
+        score += 4
 
-    return len(reasons) > 0, reasons
+    # Return based on both criteria count and confidence score
+    return score >= 3, reasons
 
 
 def extract_links(url, html):
@@ -308,7 +461,7 @@ def extract_title(html):
 
 async def fetch_url(session, url, depth, university):
     """Fetch a URL and process its content."""
-    global crawler_running, total_urls_visited
+    global crawler_running, total_urls_visited, admission_related_domains
 
     if not crawler_running:
         return
@@ -316,6 +469,19 @@ async def fetch_url(session, url, depth, university):
     try:
         # Apply politeness delay
         await asyncio.sleep(Config.REQUEST_DELAY)
+
+        # Log when fetching admission-related domains for debugging
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        path = parsed.path.lower()
+
+        if (
+            "admission" in domain
+            or "apply" in domain
+            or "undergrad" in domain
+            or any(p in path for p in ["/apply", "/admission", "/admissions"])
+        ):
+            logger.info(f"Fetching admission-related URL: {url} (depth {depth})")
 
         # Fetch URL
         async with session.get(
@@ -335,7 +501,7 @@ async def fetch_url(session, url, depth, university):
             is_app_page, reasons = is_application_page(url, html, title)
 
             if is_app_page:
-                logger.info(f"Found application page: {url} - {title}")
+                logger.success(f"Found application page: {url} - {title}")
                 logger.info(f"Reasons: {', '.join(reasons)}")
 
                 found_applications.append(
@@ -345,11 +511,24 @@ async def fetch_url(session, url, depth, university):
                         "university": university["name"],
                         "reasons": reasons,
                         "depth": depth,
+                        "html_snippet": html[:5000],  # Save a snippet for evaluation
                     }
                 )
 
-            # Don't extract more links if we've reached max depth
-            if depth <= 0:
+            # Check if we're on an admission-related domain to increase depth
+            if "admission" in domain or "apply" in domain or "undergrad" in domain:
+                # Add to our set of admission domains
+                admission_related_domains.add(domain)
+
+                # Don't extract more links if we've reached the max admission depth
+                if depth <= 0 and depth > -Config.MAX_ADMISSION_DEPTH:
+                    logger.info(f"Allowing extended depth for admission URL: {url}")
+                    # Continue with negative depth to track extended crawling
+                    depth = -1  # Start extended depth crawling
+                elif depth < 0 and depth <= -Config.MAX_ADMISSION_DEPTH:
+                    return
+            # For normal domains, respect the regular depth
+            elif depth <= 0:
                 return
 
             # Extract and queue links
@@ -394,9 +573,13 @@ async def queue_links(links, depth, university):
             return
 
         # Check if domain is related to the university
-        if university_domain not in domain and not is_related_domain(
-            university_domain, domain, university["name"]
-        ):
+        is_related = False
+        if university_domain in domain:
+            is_related = True
+        elif is_related_domain(university_domain, domain, university["name"]):
+            is_related = True
+
+        if not is_related:
             continue
 
         # Skip if already visited or queued
@@ -428,9 +611,25 @@ async def queue_links(links, depth, university):
 
 def is_related_domain(university_domain, url_domain, university_name):
     """Check if a domain is likely related to a university domain."""
+    url_domain_lower = url_domain.lower()
+
     # Direct match
-    if university_domain in url_domain:
+    if university_domain in url_domain_lower:
         return True
+
+    # Special handling for admission-related subdomains (highest priority)
+    if any(
+        term in url_domain_lower
+        for term in ["admission", "apply", "undergrad", "applicant"]
+    ):
+        university_root = university_domain.split(".")[
+            -2
+        ]  # e.g., 'stanford' from 'stanford.edu'
+        if university_root in url_domain_lower:
+            logger.info(
+                f"Found critical admission domain: {url_domain} for {university_name}"
+            )
+            return True
 
     # Common patterns for university-related domains
     related_patterns = [
@@ -439,10 +638,14 @@ def is_related_domain(university_domain, url_domain, university_name):
         r"undergrad\.",
         r"student\.",
         r"portal\.",
+        r"applicant\.",
+        r"freshman\.",
+        r"myapp\.",
+        r"commonapp\.",
     ]
 
     for pattern in related_patterns:
-        if re.search(pattern, url_domain):
+        if re.search(pattern, url_domain_lower):
             logger.info(f"Found related domain: {url_domain} for {university_name}")
             return True
 
@@ -454,7 +657,7 @@ def is_related_domain(university_domain, url_domain, university_name):
         abbreviation = "".join(
             word[0] for word in university_name_parts if len(word) > 1
         )
-        if len(abbreviation) >= 2 and abbreviation.lower() in url_domain.lower():
+        if len(abbreviation) >= 2 and abbreviation.lower() in url_domain_lower:
             logger.info(
                 f"Found related domain by abbreviation: {url_domain} for {university_name}"
             )
@@ -462,7 +665,7 @@ def is_related_domain(university_domain, url_domain, university_name):
 
     # Check for parts of university name
     for part in university_name_parts:
-        if len(part) > 3 and part.lower() in url_domain.lower():
+        if len(part) > 3 and part.lower() in url_domain_lower:
             logger.info(
                 f"Found related domain by name: {url_domain} for {university_name}"
             )
@@ -522,10 +725,15 @@ async def monitor_progress():
                 f"{len(found_applications)} application pages found, {rate:.1f} URLs/sec"
             )
 
+            # Log admission domains we've found
+            if admission_related_domains:
+                logger.info(
+                    f"Found admission domains: {', '.join(admission_related_domains)}"
+                )
+
             # Check if queue is empty
             if url_queue.empty() and total_urls_visited > 0:
                 logger.info("Queue is empty, crawling complete")
-                save_results()
                 break
 
             last_time = current_time
@@ -537,41 +745,203 @@ async def monitor_progress():
             logger.error(f"Monitor error: {e}")
 
 
-def save_results():
-    """Save crawler results to JSON file."""
-    filename = f"application_pages_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+async def evaluate_application_page(app_page):
+    """Use GPT-4o-mini to evaluate if a page is truly an application page."""
+    try:
+        # Use semaphore to limit concurrent API calls
+        async with api_semaphore:
+            prompt = f"""
+            Analyze this university webpage and determine if it is an actual application page or portal where students can apply to the university.
 
-    with open(filename, "w") as f:
+            University: {app_page['university']}
+            Page Title: {app_page['title']}
+            URL: {app_page['url']}
+            Detected Reasons: {', '.join(app_page['reasons'])}
+
+            Please determine:
+            1. Is this a direct application page or portal where students can start/submit an application?
+            2. Is this a page with information about how to apply but not an actual application?
+            3. Is this an unrelated page that was incorrectly flagged?
+
+            Focus on whether students can actually BEGIN or SUBMIT an application on this page.
+            Look for forms, "Apply Now" buttons that lead directly to applications, login portals specifically for applicants, etc.
+
+            Your task:
+            - Respond with TRUE if this is definitely an actual application page or portal where students can apply
+            - Respond with FALSE if this is just information or unrelated
+            - Then provide a brief explanation for your decision
+            
+            Format your response like this:
+            RESULT: TRUE/FALSE
+            EXPLANATION: Your explanation here
+            """
+
+            # Use the synchronous API but run it in a separate thread to keep things async
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: openai.chat.completions.create(
+                    model=Config.MODEL_NAME,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are an expert at analyzing university websites and identifying actual application pages versus informational pages.",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.1,
+                ),
+            )
+
+            result_text = response.choices[0].message.content.strip()
+
+            # Parse the response
+            result_match = re.search(
+                r"RESULT:\s*(TRUE|FALSE)", result_text, re.IGNORECASE
+            )
+            explanation_match = re.search(
+                r"EXPLANATION:\s*(.*)", result_text, re.DOTALL
+            )
+
+            is_actual_application = False
+            explanation = "Could not evaluate"
+
+            if result_match:
+                is_actual_application = result_match.group(1).upper() == "TRUE"
+
+            if explanation_match:
+                explanation = explanation_match.group(1).strip()
+
+            # Create evaluated entry
+            evaluated_entry = app_page.copy()
+            evaluated_entry.pop(
+                "html_snippet", None
+            )  # Remove HTML snippet to save space
+            evaluated_entry["is_actual_application"] = is_actual_application
+            evaluated_entry["ai_evaluation"] = explanation
+
+            log_prefix = (
+                "✅ ACTUAL APPLICATION"
+                if is_actual_application
+                else "❌ NOT APPLICATION"
+            )
+            logger.info(f"Evaluated {app_page['url']}: {log_prefix}")
+
+            return evaluated_entry
+
+    except Exception as e:
+        logger.error(f"Error evaluating {app_page['url']}: {e}")
+
+        # Return with error message
+        evaluated_entry = app_page.copy()
+        evaluated_entry.pop("html_snippet", None)
+        evaluated_entry["is_actual_application"] = False
+        evaluated_entry["ai_evaluation"] = f"Error during evaluation: {str(e)}"
+
+        return evaluated_entry
+
+
+async def evaluate_all_applications():
+    """Evaluate all found application pages using GPT-4o-mini."""
+    if not found_applications:
+        logger.warning("No application pages to evaluate")
+        return []
+
+    logger.info(
+        f"Evaluating {len(found_applications)} application pages with {Config.MODEL_NAME}..."
+    )
+
+    # Evaluate in batches to avoid overwhelming the API
+    results = []
+    batch_size = Config.MAX_EVAL_BATCH
+
+    for i in range(0, len(found_applications), batch_size):
+        batch = found_applications[i : i + batch_size]
+        logger.info(
+            f"Evaluating batch {i//batch_size + 1} of {(len(found_applications)-1)//batch_size + 1} ({len(batch)} pages)"
+        )
+
+        # Process the batch concurrently
+        batch_results = await asyncio.gather(
+            *[evaluate_application_page(app) for app in batch]
+        )
+        results.extend(batch_results)
+
+        # Brief pause between batches
+        if i + batch_size < len(found_applications):
+            await asyncio.sleep(1)
+
+    return results
+
+
+def save_results(evaluated=None):
+    """Save crawler results to JSON files."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Save original results
+    original_filename = f"application_pages_{timestamp}.json"
+    with open(original_filename, "w") as f:
         json.dump(found_applications, f, indent=2)
 
-    logger.info(f"Results saved to {filename}")
+    logger.info(f"Original results saved to {original_filename}")
 
-    # Save a summary report
-    summary_file = f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    # Save evaluated results if available
+    if evaluated:
+        evaluated_filename = f"evaluated_applications_{timestamp}.json"
+        with open(evaluated_filename, "w") as f:
+            json.dump(evaluated, f, indent=2)
 
-    with open(summary_file, "w") as f:
-        f.write("=== University Application Pages Summary ===\n\n")
-        f.write(f"Total URLs visited: {total_urls_visited}\n")
-        f.write(f"Total application pages found: {len(found_applications)}\n\n")
+        logger.info(f"Evaluated results saved to {evaluated_filename}")
 
-        # Group by university
-        by_university = {}
-        for app in found_applications:
-            univ = app["university"]
-            if univ not in by_university:
-                by_university[univ] = []
-            by_university[univ].append(app)
+        # Count actual application pages
+        actual_count = sum(
+            1 for app in evaluated if app.get("is_actual_application", False)
+        )
 
-        for univ, apps in by_university.items():
-            f.write(f"== {univ}: {len(apps)} application pages ==\n")
-            for i, app in enumerate(apps, 1):
-                f.write(
-                    f"{i}. {app['title']}\n   {app['url']}\n   Reasons: {', '.join(app['reasons'])}\n\n"
-                )
+        # Save a summary report
+        summary_file = f"summary_{timestamp}.txt"
 
-    logger.info(f"Summary saved to {summary_file}")
+        with open(summary_file, "w") as f:
+            f.write("=== University Application Pages Summary ===\n\n")
+            f.write(f"Total URLs visited: {total_urls_visited}\n")
+            f.write(f"Total application pages found: {len(found_applications)}\n")
+            f.write(f"Actual application pages (AI evaluated): {actual_count}\n\n")
 
-    return filename, summary_file
+            # Group by university
+            by_university = {}
+            for app in evaluated:
+                univ = app["university"]
+                if univ not in by_university:
+                    by_university[univ] = []
+                by_university[univ].append(app)
+
+            for univ, apps in by_university.items():
+                f.write(f"== {univ}: {len(apps)} application pages ==\n")
+
+                # First list actual application pages
+                f.write("\n--- ACTUAL APPLICATION PAGES ---\n")
+                actual_apps = [
+                    app for app in apps if app.get("is_actual_application", False)
+                ]
+                for i, app in enumerate(actual_apps, 1):
+                    f.write(
+                        f"{i}. {app['title']}\n   {app['url']}\n   Evaluation: {app['ai_evaluation']}\n\n"
+                    )
+
+                # Then list information/other pages
+                f.write("\n--- INFORMATION/OTHER PAGES ---\n")
+                info_apps = [
+                    app for app in apps if not app.get("is_actual_application", False)
+                ]
+                for i, app in enumerate(info_apps, 1):
+                    f.write(
+                        f"{i}. {app['title']}\n   {app['url']}\n   Evaluation: {app['ai_evaluation']}\n\n"
+                    )
+
+        logger.info(f"Summary saved to {summary_file}")
+        return original_filename, evaluated_filename, summary_file
+
+    return original_filename, None, None
 
 
 async def main():
@@ -580,20 +950,75 @@ async def main():
 
     logger.info("Starting crawler")
 
-    # Seed the queue
+    # Seed the queue with university home pages
     for university in Config.SEED_UNIVERSITIES:
+        # Add the main university domain
         await url_queue.put((university["base_url"], Config.MAX_DEPTH, university))
         visited_urls.add(university["base_url"])
 
-        # Add admissions URL directly (if known)
-        if university["name"] == "MIT":
-            admissions_url = "https://www.mit.edu/admissions-aid"
-            await url_queue.put((admissions_url, Config.MAX_DEPTH, university))
-            visited_urls.add(admissions_url)
-        elif university["name"] == "Stanford":
-            admissions_url = "https://www.stanford.edu/admission/"
-            await url_queue.put((admissions_url, Config.MAX_DEPTH, university))
-            visited_urls.add(admissions_url)
+        # Add known admission subdomains as seeds
+        university_domain = university["domain"]
+        if university_domain in Config.ADMISSION_SUBDOMAINS:
+            for subdomain in Config.ADMISSION_SUBDOMAINS[university_domain]:
+                admission_url = f"https://{subdomain}/"
+                logger.info(f"Adding admission seed URL: {admission_url}")
+                await url_queue.put((admission_url, Config.MAX_DEPTH, university))
+                visited_urls.add(admission_url)
+
+                # Add common application paths to these admission domains
+                for path in [
+                    "/apply",
+                    "/first-year",
+                    "/apply/first-year",
+                    "/undergraduate",
+                    "/under-graduate",
+                    "/freshman",
+                    "/undergrad",
+                    "/admissions",
+                    "/application",
+                    "/portal",
+                    "/enroll",
+                    "/register",
+                    "/prospective",
+                    "/admission",
+                ]:
+                    path_url = f"https://{subdomain}{path}"
+                    logger.info(f"Adding admission path URL: {path_url}")
+                    await url_queue.put((path_url, Config.MAX_DEPTH, university))
+                    visited_urls.add(path_url)
+
+        # # Add admissions URL directly (if known)
+        # if university["name"] == "MIT":
+        #     admissions_url = "https://www.mit.edu/admissions-aid"
+        #     await url_queue.put((admissions_url, Config.MAX_DEPTH, university))
+        #     visited_urls.add(admissions_url)
+
+        #     # Add more specific MIT paths
+        #     for url in [
+        #         "https://admissions.mit.edu/apply/",
+        #         "https://admissions.mit.edu/apply/first-year/",
+        #         "https://mitadmissions.org/apply/",
+        #     ]:
+        #         logger.info(f"Adding MIT-specific seed URL: {url}")
+        #         await url_queue.put((url, Config.MAX_DEPTH, university))
+        #         visited_urls.add(url)
+
+        # elif university["name"] == "Stanford":
+        #     admissions_url = "https://www.stanford.edu/admission/"
+        #     await url_queue.put((admissions_url, Config.MAX_DEPTH, university))
+        #     visited_urls.add(admissions_url)
+
+        #     # Add more specific Stanford paths
+        #     for url in [
+        #         "https://admission.stanford.edu/",
+        #         "https://admission.stanford.edu/apply/",
+        #         "https://admission.stanford.edu/apply/first-year/",
+        #         "https://undergrad.stanford.edu/",
+        #         "https://undergrad.stanford.edu/admission",
+        #     ]:
+        #         logger.info(f"Adding Stanford-specific seed URL: {url}")
+        #         await url_queue.put((url, Config.MAX_DEPTH, university))
+        #         visited_urls.add(url)
 
     # Start crawler
     async with aiohttp.ClientSession() as session:
@@ -639,15 +1064,38 @@ async def main():
             # Wait for cancellation to complete
             await asyncio.gather(*workers, monitor, return_exceptions=True)
 
-            # Save results
+            # Evaluate application pages with GPT-4o-mini
             if found_applications:
-                results_file, summary_file = save_results()
-                logger.info(f"Found {len(found_applications)} application pages")
-                logger.info(f"Results saved to {results_file} and {summary_file}")
-            else:
-                logger.info("No application pages found")
+                logger.info(
+                    f"Found {len(found_applications)} potential application pages"
+                )
 
-    logger.info("Crawler finished")
+                try:
+                    evaluated_results = await evaluate_all_applications()
+                    if evaluated_results:
+                        actual_count = sum(
+                            1
+                            for app in evaluated_results
+                            if app.get("is_actual_application", False)
+                        )
+                        logger.success(
+                            f"Identified {actual_count} actual application pages out of {len(evaluated_results)} candidates"
+                        )
+
+                    # Save results
+                    original_file, evaluated_file, summary_file = save_results(
+                        evaluated_results
+                    )
+                    logger.success(
+                        f"Results saved to {original_file}, {evaluated_file}, and {summary_file}"
+                    )
+                except Exception as e:
+                    logger.error(f"Error during evaluation: {e}")
+                    save_results()
+            else:
+                logger.warning("No application pages found")
+
+    logger.success("Crawler finished")
 
 
 if __name__ == "__main__":

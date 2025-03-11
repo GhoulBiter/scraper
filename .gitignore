@@ -6,3 +6,5 @@ old_async_crawler/
 __pycache__/
 
 *.log
+
+outputs/
