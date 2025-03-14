@@ -34,7 +34,7 @@ logger.add(
 class Config:
     # List of seed universities to crawl
     SEED_UNIVERSITIES = [
-        {"name": "MIT", "base_url": "https://www.mit.edu", "domain": "mit.edu"},
+        # {"name": "MIT", "base_url": "https://www.mit.edu", "domain": "mit.edu"},
         {
             "name": "Stanford",
             "base_url": "https://www.stanford.edu",
@@ -44,21 +44,21 @@ class Config:
 
     # Known admission subdomains (to add as seeds)
     ADMISSION_SUBDOMAINS = {
-        "mit.edu": ["admissions.mit.edu", "apply.mit.edu"],
-        "stanford.edu": [
-            "admission.stanford.edu",
-            "apply.stanford.edu",
-            "admissions.stanford.edu",
-            "undergrad.stanford.edu",
-        ],
+        # "mit.edu": ["admissions.mit.edu", "apply.mit.edu"],
+        # "stanford.edu": [
+        #     "admission.stanford.edu",
+        #     "apply.stanford.edu",
+        #     "admissions.stanford.edu",
+        #     "undergrad.stanford.edu",
+        # ],
     }
 
     # Crawling settings
-    MAX_DEPTH = 10  # Increased from 7 to ensure we reach deeper pages
+    MAX_DEPTH = 12  # Increased from 7 to ensure we reach deeper pages
     MAX_ADMISSION_DEPTH = 15  # Special deeper crawl for admission-related domains
-    REQUEST_TIMEOUT = 10
+    REQUEST_TIMEOUT = 15  # Increased from 10 to handle slower sites
     REQUEST_DELAY = 1
-    MAX_URLS_PER_DOMAIN = 500  # Increased from 300 to explore more
+    MAX_URLS_PER_DOMAIN = 600  # Increased from 300 to explore more
     MAX_TOTAL_URLS = 10000
     NUM_WORKERS = 12
 
@@ -520,6 +520,35 @@ async def fetch_url(session, url, depth, university):
                 # Add to our set of admission domains
                 admission_related_domains.add(domain)
 
+                # Look for specific application links if we're in an admission domain
+                apply_links = []
+                apply_patterns = [
+                    r'<a[^>]*href=["\'](.*?apply.*?first-year.*?)["\']',
+                    r'<a[^>]*href=["\'](.*?apply.*?freshman.*?)["\']',
+                    r'<a[^>]*href=["\'](.*?apply.*?undergraduate.*?)["\']',
+                    r'<a[^>]*href=["\'](.*?apply.*?transfer.*?)["\']',
+                    r'<a[^>]*href=["\'](.*?admission.*?apply.*?)["\']',
+                ]
+
+                for pattern in apply_patterns:
+                    matches = re.findall(pattern, html, re.IGNORECASE)
+                    for href in matches:
+                        full_url = urljoin(url, href)
+                        normalized = normalize_url(full_url)
+
+                        if is_valid_url(normalized) and normalized not in visited_urls:
+                            logger.info(
+                                f"Found critical application link: {normalized}"
+                            )
+                            apply_links.append(normalized)
+
+                # Process these critical links with highest priority (depth doesn't matter)
+                for link in apply_links:
+                    visited_urls.add(link)
+                    await url_queue.put(
+                        (link, Config.MAX_DEPTH, university)
+                    )  # Reset depth to ensure crawling
+
                 # Don't extract more links if we've reached the max admission depth
                 if depth <= 0 and depth > -Config.MAX_ADMISSION_DEPTH:
                     logger.info(f"Allowing extended depth for admission URL: {url}")
@@ -706,6 +735,249 @@ async def worker(session, worker_id):
     logger.info(f"Worker {worker_id} shutting down")
 
 
+# Add after evaluating and finding admission domains
+async def explore_specific_application_paths():
+    """Directly check common application paths on found admission domains."""
+    if not admission_related_domains:
+        return
+
+    logger.info(
+        f"Exploring specific application paths on {len(admission_related_domains)} admission domains"
+    )
+
+    async with aiohttp.ClientSession() as session:
+        for domain in admission_related_domains:
+            # Common application paths to check directly
+            specific_paths = [
+                "/apply",
+                "/apply/",  # With trailing slash
+                "/apply/first-year",
+                "/apply/first-year/",  # With trailing slash
+                "/apply/freshman",
+                "/apply/undergraduate",
+                "/application",
+                "/admission/apply",
+                "/admission/first-year",
+                "/admission/freshman",
+            ]
+
+            for path in specific_paths:
+                full_url = f"https://{domain}{path}"
+                if full_url in visited_urls:
+                    continue
+
+                logger.info(f"Directly checking potential application path: {full_url}")
+                try:
+                    async with session.get(
+                        full_url, timeout=Config.REQUEST_TIMEOUT
+                    ) as response:
+                        if response.status == 200:
+                            html = await response.text()
+                            title = extract_title(html)
+
+                            # Skip 404 pages even if they return 200 status
+                            if "not found" in title.lower():
+                                logger.warning(
+                                    f"Skipping 404 page: {full_url} - {title}"
+                                )
+                                continue
+
+                            # Check if this is an application page
+                            is_app_page, reasons = is_application_page(
+                                full_url, html, title
+                            )
+                            if is_app_page:
+                                logger.success(
+                                    f"Found direct application path: {full_url} - {title}"
+                                )
+                                # Add to found applications
+                                for university in Config.SEED_UNIVERSITIES:
+                                    if university["domain"] in domain:
+                                        found_applications.append(
+                                            {
+                                                "url": full_url,
+                                                "title": title,
+                                                "university": university["name"],
+                                                "reasons": reasons,
+                                                "depth": 0,
+                                                "html_snippet": html[:5000],
+                                            }
+                                        )
+                                        break
+
+                            # If we find a valid /apply path, recursively check its subpaths
+                            if (
+                                "/apply" in path or path.endswith("/apply/")
+                            ) and "not found" not in title.lower():
+                                await check_subpaths(
+                                    full_url,
+                                    university_name=next(
+                                        u["name"]
+                                        for u in Config.SEED_UNIVERSITIES
+                                        if u["domain"] in domain
+                                    ),
+                                )
+
+                except Exception as e:
+                    logger.error(f"Error checking direct path {full_url}: {e}")
+
+
+async def check_subpaths(base_url, university_name):
+    """Recursively check subpaths of a valid application URL."""
+    logger.info(f"Checking subpaths of {base_url}")
+
+    # Define application subpaths to check
+    subpaths = [
+        "first-year",
+        "first-year/",
+        "freshman",
+        "freshman/",
+        "undergraduate",
+        "undergraduate/",
+        "transfer",
+        "transfer/",
+    ]
+
+    async with aiohttp.ClientSession() as session:
+        for subpath in subpaths:
+            if base_url.endswith("/"):
+                full_url = f"{base_url}{subpath}"
+            else:
+                full_url = f"{base_url}/{subpath}"
+
+            if full_url in visited_urls:
+                continue
+
+            visited_urls.add(full_url)
+            logger.info(f"Checking application subpath: {full_url}")
+            try:
+                async with session.get(
+                    full_url, timeout=Config.REQUEST_TIMEOUT
+                ) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        title = extract_title(html)
+
+                        # Skip 404 pages
+                        if (
+                            "not found" in title.lower()
+                            or "page not found" in html.lower()
+                        ):
+                            logger.warning(f"Skipping 404 page: {full_url} - {title}")
+                            continue
+
+                        # Check if this is an application page
+                        is_app_page, reasons = is_application_page(
+                            full_url, html, title
+                        )
+                        if is_app_page:
+                            logger.success(
+                                f"Found application subpath: {full_url} - {title}"
+                            )
+                            # Add to found applications
+                            found_applications.append(
+                                {
+                                    "url": full_url,
+                                    "title": title,
+                                    "university": university_name,
+                                    "reasons": reasons,
+                                    "depth": 0,
+                                    "html_snippet": html[:5000],
+                                }
+                            )
+
+                        # Also check for specific keywords in the HTML that might indicate application content
+                        if any(
+                            term in html.lower()
+                            for term in [
+                                "application form",
+                                "common app",
+                                "apply now",
+                                "application deadline",
+                            ]
+                        ):
+                            logger.success(
+                                f"Found application-related content: {full_url} - {title}"
+                            )
+                            # Add to found applications if not already added
+                            if not is_app_page:
+                                found_applications.append(
+                                    {
+                                        "url": full_url,
+                                        "title": title,
+                                        "university": university_name,
+                                        "reasons": [
+                                            "Contains application-related content"
+                                        ],
+                                        "depth": 0,
+                                        "html_snippet": html[:5000],
+                                    }
+                                )
+
+                        # Extract links from this page to find more application pages
+                        if "/apply/" in full_url or "/application/" in full_url:
+                            links = extract_links(full_url, html)
+                            for link in links:
+                                if any(
+                                    term in link.lower()
+                                    for term in [
+                                        "/apply/",
+                                        "/first-year/",
+                                        "/freshman/",
+                                        "/application/",
+                                        "/submit/",
+                                    ]
+                                ):
+                                    if link not in visited_urls:
+                                        visited_urls.add(link)
+                                        logger.info(
+                                            f"Found additional application link: {link}"
+                                        )
+                                        try:
+                                            async with session.get(
+                                                link, timeout=Config.REQUEST_TIMEOUT
+                                            ) as link_response:
+                                                if link_response.status == 200:
+                                                    link_html = (
+                                                        await link_response.text()
+                                                    )
+                                                    link_title = extract_title(
+                                                        link_html
+                                                    )
+                                                    if (
+                                                        "not found"
+                                                        not in link_title.lower()
+                                                    ):
+                                                        (
+                                                            is_link_app_page,
+                                                            link_reasons,
+                                                        ) = is_application_page(
+                                                            link, link_html, link_title
+                                                        )
+                                                        if is_link_app_page:
+                                                            logger.success(
+                                                                f"Found linked application page: {link} - {link_title}"
+                                                            )
+                                                            found_applications.append(
+                                                                {
+                                                                    "url": link,
+                                                                    "title": link_title,
+                                                                    "university": university_name,
+                                                                    "reasons": link_reasons,
+                                                                    "depth": 0,
+                                                                    "html_snippet": link_html[
+                                                                        :5000
+                                                                    ],
+                                                                }
+                                                            )
+                                        except Exception as e:
+                                            logger.error(
+                                                f"Error checking application link {link}: {e}"
+                                            )
+            except Exception as e:
+                logger.error(f"Error checking subpath {full_url}: {e}")
+
+
 async def monitor_progress():
     """Monitor and report crawler progress."""
     last_time = time.time()
@@ -764,7 +1036,7 @@ async def evaluate_application_page(app_page):
             3. Is this an unrelated page that was incorrectly flagged?
 
             Focus on whether students can actually BEGIN or SUBMIT an application on this page.
-            Look for forms, "Apply Now" buttons that lead directly to applications, login portals specifically for applicants, etc.
+            Look for forms, "Apply Now" buttons that lead directly to applications, links or buttons to outside domains and services (Common App in the US, UCAS in the UK, UniAssist in Germany, etc.), login portals specifically for applicants, etc.
 
             Your task:
             - Respond with TRUE if this is definitely an actual application page or portal where students can apply
@@ -987,39 +1259,6 @@ async def main():
                     await url_queue.put((path_url, Config.MAX_DEPTH, university))
                     visited_urls.add(path_url)
 
-        # # Add admissions URL directly (if known)
-        # if university["name"] == "MIT":
-        #     admissions_url = "https://www.mit.edu/admissions-aid"
-        #     await url_queue.put((admissions_url, Config.MAX_DEPTH, university))
-        #     visited_urls.add(admissions_url)
-
-        #     # Add more specific MIT paths
-        #     for url in [
-        #         "https://admissions.mit.edu/apply/",
-        #         "https://admissions.mit.edu/apply/first-year/",
-        #         "https://mitadmissions.org/apply/",
-        #     ]:
-        #         logger.info(f"Adding MIT-specific seed URL: {url}")
-        #         await url_queue.put((url, Config.MAX_DEPTH, university))
-        #         visited_urls.add(url)
-
-        # elif university["name"] == "Stanford":
-        #     admissions_url = "https://www.stanford.edu/admission/"
-        #     await url_queue.put((admissions_url, Config.MAX_DEPTH, university))
-        #     visited_urls.add(admissions_url)
-
-        #     # Add more specific Stanford paths
-        #     for url in [
-        #         "https://admission.stanford.edu/",
-        #         "https://admission.stanford.edu/apply/",
-        #         "https://admission.stanford.edu/apply/first-year/",
-        #         "https://undergrad.stanford.edu/",
-        #         "https://undergrad.stanford.edu/admission",
-        #     ]:
-        #         logger.info(f"Adding Stanford-specific seed URL: {url}")
-        #         await url_queue.put((url, Config.MAX_DEPTH, university))
-        #         visited_urls.add(url)
-
     # Start crawler
     async with aiohttp.ClientSession() as session:
         # Start monitor task
@@ -1063,6 +1302,12 @@ async def main():
 
             # Wait for cancellation to complete
             await asyncio.gather(*workers, monitor, return_exceptions=True)
+
+            if admission_related_domains:
+                logger.info(
+                    "Exploring specific application paths on admission domains..."
+                )
+                await explore_specific_application_paths()
 
             # Evaluate application pages with GPT-4o-mini
             if found_applications:
