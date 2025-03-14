@@ -11,6 +11,18 @@ from datetime import datetime
 from loguru import logger
 import openai
 
+# Database functions imports
+database_available = False
+try:
+    from database import init_database, save_metrics_to_db, get_aggregated_metrics
+
+    database_available = True
+except ImportError:
+    logger.warning(
+        "Could not import database functions. Metrics will not be saved to database."
+    )
+    database_available = False
+
 # Configure OpenAI
 openai.api_key = os.getenv("OPENAI_API_KEY")
 if not openai.api_key:
@@ -28,6 +40,19 @@ logger.add(
     rotation="10 MB",
     format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
 )
+
+
+# Global tracker for API metrics
+api_metrics = {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+    "estimated_cost_usd": 0.0,
+    "pages_evaluated": 0,
+}
+
+# Lock for API metrics
+api_metrics_lock = asyncio.Lock()
 
 
 # Configuration
@@ -180,6 +205,9 @@ class Config:
     MODEL_NAME = "gpt-4o-mini"
     MAX_EVAL_BATCH = 10  # Evaluate this many URLs in one batch
     MAX_CONCURRENT_API_CALLS = 5  # Maximum concurrent API calls
+
+    # Database settings
+    USE_SQLITE = True
 
 
 # Global state
@@ -1019,6 +1047,8 @@ async def monitor_progress():
 
 async def evaluate_application_page(app_page):
     """Use GPT-4o-mini to evaluate if a page is truly an application page."""
+    global api_metrics, api_metrics_lock
+
     try:
         # Use semaphore to limit concurrent API calls
         async with api_semaphore:
@@ -1064,6 +1094,25 @@ async def evaluate_application_page(app_page):
                     temperature=0.1,
                 ),
             )
+
+            # Track metrics with async lock to prevent race conditions
+            async with api_metrics_lock:
+                api_metrics["prompt_tokens"] += response.usage.prompt_tokens
+                api_metrics["completion_tokens"] += response.usage.completion_tokens
+                api_metrics["total_tokens"] += response.usage.total_tokens
+                api_metrics["pages_evaluated"] += 1
+
+                # Calculate cost based on model pricing - adjust rates as needed
+                rate_per_1k_prompt = 0.01  # Example rate for GPT-4o-mini prompt tokens
+                rate_per_1k_completion = (
+                    0.03  # Example rate for GPT-4o-mini completion tokens
+                )
+                page_cost = (
+                    response.usage.prompt_tokens / 1000
+                ) * rate_per_1k_prompt + (
+                    response.usage.completion_tokens / 1000
+                ) * rate_per_1k_completion
+                api_metrics["estimated_cost_usd"] += page_cost
 
             result_text = response.choices[0].message.content.strip()
 
@@ -1170,11 +1219,18 @@ def save_results(evaluated=None):
             1 for app in evaluated if app.get("is_actual_application", False)
         )
 
+        # Get unique universities visited
+        universities_visited = list(set(app["university"] for app in evaluated))
+
         # Save a summary report
         summary_file = f"summary_{timestamp}.txt"
 
         with open(summary_file, "w") as f:
+            # We'll add API metrics at the very top in the main function
+            # This section creates the main summary content
+
             f.write("=== University Application Pages Summary ===\n\n")
+            f.write(f"Universities Visited: {', '.join(universities_visited)}\n")
             f.write(f"Total URLs visited: {total_urls_visited}\n")
             f.write(f"Total application pages found: {len(found_applications)}\n")
             f.write(f"Actual application pages (AI evaluated): {actual_count}\n\n")
@@ -1218,9 +1274,38 @@ def save_results(evaluated=None):
 
 async def main():
     """Main crawler function."""
-    global crawler_running
+    global crawler_running, api_metrics, database_available
 
     logger.info("Starting crawler")
+
+    # Generate a unique run ID for this crawl
+    run_id = f"run_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+    # Initialize the database if enabled
+    if Config.USE_SQLITE and database_available:
+        try:
+            await init_database()
+            logger.info("Database initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {e}")
+            # Continue with reduced functionality
+            database_available = False
+
+    # Reset metrics for this run
+    api_metrics = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "estimated_cost_usd": 0.0,
+        "pages_evaluated": 0,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "university": (
+            Config.SEED_UNIVERSITIES[0]["name"]
+            if Config.SEED_UNIVERSITIES
+            else "Unknown"
+        ),
+        "model": Config.MODEL_NAME,
+    }
 
     # Seed the queue with university home pages
     for university in Config.SEED_UNIVERSITIES:
@@ -1310,6 +1395,8 @@ async def main():
                 await explore_specific_application_paths()
 
             # Evaluate application pages with GPT-4o-mini
+            summary_file = None
+            evaluated_results = []
             if found_applications:
                 logger.info(
                     f"Found {len(found_applications)} potential application pages"
@@ -1317,6 +1404,7 @@ async def main():
 
                 try:
                     evaluated_results = await evaluate_all_applications()
+
                     if evaluated_results:
                         actual_count = sum(
                             1
@@ -1326,19 +1414,121 @@ async def main():
                         logger.success(
                             f"Identified {actual_count} actual application pages out of {len(evaluated_results)} candidates"
                         )
+                    else:
+                        logger.warning("No evaluation results were returned")
 
                     # Save results
-                    original_file, evaluated_file, summary_file = save_results(
-                        evaluated_results
-                    )
-                    logger.success(
-                        f"Results saved to {original_file}, {evaluated_file}, and {summary_file}"
-                    )
-                except Exception as e:
-                    logger.error(f"Error during evaluation: {e}")
-                    save_results()
+                    try:
+                        original_file, evaluated_file, summary_file = save_results(
+                            evaluated_results
+                        )
+                        logger.success(
+                            f"Results saved to {original_file}, {evaluated_file if evaluated_file else 'N/A'}, and {summary_file if summary_file else 'N/A'}"
+                        )
+                    except Exception as file_error:
+                        logger.error(f"Error saving results: {file_error}")
+                        # Try to save original results at least
+                        original_file = save_results()
+                        logger.info(f"Original results saved to {original_file}")
+
+                except Exception as eval_error:
+                    logger.error(f"Error during evaluation: {eval_error}")
+                    # Try to salvage what we can
+                    try:
+                        original_file = save_results()
+                        logger.info(
+                            f"Original results saved to {original_file} despite evaluation failure"
+                        )
+                    except Exception as save_error:
+                        logger.error(
+                            f"Failed to save even original results: {save_error}"
+                        )
             else:
                 logger.warning("No application pages found")
+
+            # After evaluation, save the metrics
+            if found_applications and Config.USE_SQLITE and database_available:
+                try:
+                    # Save metrics to the database
+                    await save_metrics_to_db(api_metrics, run_id)
+                    logger.info(f"Saved API metrics to database for run {run_id}")
+
+                    # Get historical metrics for the summary
+                    try:
+                        historical_metrics = await get_aggregated_metrics("month")
+                    except Exception as e:
+                        logger.error(f"Failed to get historical metrics: {e}")
+                        historical_metrics = {
+                            "total_runs": 0,
+                            "total_pages": 0,
+                            "total_tokens": 0,
+                            "total_cost": 0.0,
+                        }
+
+                    # Ensure we have a valid summary file
+                    if summary_file:
+                        # Create a temporary file with metrics
+                        temp_metrics_file = f"temp_metrics_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
+                        try:
+                            with open(temp_metrics_file, "w") as f:
+                                f.write("=== API Usage Metrics ===\n\n")
+                                f.write(
+                                    f"Model: {api_metrics.get('model', Config.MODEL_NAME)}\n"
+                                )
+                                f.write(
+                                    f"Pages evaluated: {api_metrics.get('pages_evaluated', 0)}\n"
+                                )
+                                f.write(
+                                    f"Prompt tokens: {api_metrics.get('prompt_tokens', 0)}\n"
+                                )
+                                f.write(
+                                    f"Completion tokens: {api_metrics.get('completion_tokens', 0)}\n"
+                                )
+                                f.write(
+                                    f"Total tokens: {api_metrics.get('total_tokens', 0)}\n"
+                                )
+                                f.write(
+                                    f"Estimated cost: ${api_metrics.get('estimated_cost_usd', 0.0):.4f} USD\n\n"
+                                )
+
+                                f.write(
+                                    "=== Historical API Usage (Last 30 Days) ===\n\n"
+                                )
+                                f.write(
+                                    f"Total runs: {historical_metrics.get('total_runs', 0)}\n"
+                                )
+                                f.write(
+                                    f"Total pages evaluated: {historical_metrics.get('total_pages', 0)}\n"
+                                )
+                                f.write(
+                                    f"Total tokens used: {historical_metrics.get('total_tokens', 0)}\n"
+                                )
+                                f.write(
+                                    f"Total estimated cost: ${historical_metrics.get('total_cost', 0.0):.4f} USD\n\n"
+                                )
+
+                            # Now combine the metrics file with the original summary
+                            with open(summary_file, "r") as original:
+                                original_content = original.read()
+
+                            with open(summary_file, "w") as final:
+                                with open(temp_metrics_file, "r") as metrics:
+                                    metrics_content = metrics.read()
+                                final.write(metrics_content)
+                                final.write(original_content)
+
+                            # Remove the temporary file
+                            os.remove(temp_metrics_file)
+
+                            logger.success(
+                                f"Added API metrics to summary file {summary_file}"
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to write API metrics to summary file: {e}"
+                            )
+                except Exception as e:
+                    logger.error(f"Error saving API metrics: {e}")
 
     logger.success("Crawler finished")
 

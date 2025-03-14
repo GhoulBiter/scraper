@@ -13,3 +13,4 @@ summary*.txt
 *.xlsx
 *.ipynb
 *.csv
+*.db
