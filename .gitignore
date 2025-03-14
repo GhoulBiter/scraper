@@ -8,3 +8,8 @@ __pycache__/
 *.log
 
 outputs/
+summary*.txt
+*application*.json
+*.xlsx
+*.ipynb
+*.csv
