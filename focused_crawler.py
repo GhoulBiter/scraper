@@ -1,4 +1,5 @@
 import asyncio
+import random
 import aiohttp
 import signal
 import time
@@ -208,6 +209,15 @@ class Config:
 
     # Database settings
     USE_SQLITE = True
+
+    # User agent settings
+    USER_AGENT = "University-Application-Crawler/1.0 (contact: ghoulbites777@gmail.com)"
+    USER_AGENT_ROTATION = True
+    USER_AGENTS = [
+        "University-Application-Crawler/1.0 (contact: ghoulbites777@gmail.com)",
+        "UniversityApplicationFinder/1.0 (contact: ghoulbites777@gmail.com)",
+        "EducationalCrawler/1.0 (contact: ghoulbites777@gmail.com)",
+    ]
 
 
 # Global state
@@ -511,15 +521,33 @@ async def fetch_url(session, url, depth, university):
         ):
             logger.info(f"Fetching admission-related URL: {url} (depth {depth})")
 
+        # Set up headers
+        headers = {
+            "User-Agent": Config.USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Connection": "keep-alive",
+            "DNT": "1",
+        }
+
+        # Use rotating user agents if configured
+        if Config.USER_AGENT_ROTATION and Config.USER_AGENTS:
+            headers["User-Agent"] = random.choice(Config.USER_AGENTS)
+
         # Fetch URL
         async with session.get(
-            url, timeout=Config.REQUEST_TIMEOUT, allow_redirects=True
+            url, timeout=Config.REQUEST_TIMEOUT, allow_redirects=True, headers=headers
         ) as response:
             if response.status != 200:
                 logger.warning(f"Got status {response.status} for {url}")
                 return
 
             total_urls_visited += 1
+
+            # Log the final URL after any redirects
+            if response.url != url:
+                logger.info(f"Redirected: {url} -> {response.url}")
+
             html = await response.text()
 
             # Extract title
@@ -1103,15 +1131,20 @@ async def evaluate_application_page(app_page):
                 api_metrics["pages_evaluated"] += 1
 
                 # Calculate cost based on model pricing - adjust rates as needed
-                rate_per_1k_prompt = 0.01  # Example rate for GPT-4o-mini prompt tokens
+                rate_per_1k_input = 0.00015  # Rate for GPT-4o-mini prompt tokens
                 rate_per_1k_completion = (
-                    0.03  # Example rate for GPT-4o-mini completion tokens
+                    0.0006  # Rate for GPT-4o-mini completion tokens
                 )
+                rate_per_1k_cached_input = (
+                    0.000075  # Rate for GPT-4o-mini cached prompt tokens
+                )
+
                 page_cost = (
-                    response.usage.prompt_tokens / 1000
-                ) * rate_per_1k_prompt + (
-                    response.usage.completion_tokens / 1000
-                ) * rate_per_1k_completion
+                    (response.usage.prompt_tokens / 1000) * rate_per_1k_input
+                    + (response.usage.prompt_tokens_details.cached_tokens / 1000)
+                    * rate_per_1k_cached_input
+                    + (response.usage.completion_tokens / 1000) * rate_per_1k_completion
+                )
                 api_metrics["estimated_cost_usd"] += page_cost
 
             result_text = response.choices[0].message.content.strip()
