@@ -14,3 +14,5 @@ summary*.txt
 *.ipynb
 *.csv
 *.db
+crawler_data.db-shm
+crawler_data.db-wal

@@ -21,7 +21,7 @@ from utils.logging_config import configure_logging
 from crawler.queue import UniqueURLQueue
 from crawler.worker import start_workers
 from crawler.monitor import monitor_progress, explore_specific_application_paths
-from crawler.shutdown import setup_signal_handlers
+from crawler.shutdown import check_for_shutdown, setup_signal_handlers
 from analysis.ai_evaluator import evaluate_all_applications, get_api_metrics
 from output.exporter import save_results
 from output.report_generator import ReportGenerator
@@ -236,6 +236,10 @@ async def main():
             try:
                 # Wait for queue to be empty or max URLs to be reached
                 while await state_manager.is_crawler_running():
+                    if await check_for_shutdown():
+                        state_manager.stop_crawler()
+                        break
+
                     if url_queue.empty():
                         logger.info("Queue is empty, crawling complete")
                         break

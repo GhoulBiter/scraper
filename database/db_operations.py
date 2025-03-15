@@ -10,7 +10,7 @@ from loguru import logger
 from config import Config
 
 # Database file path
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "crawler_data.db")
+DB_PATH = os.path.join(os.path.dirname(__file__), "..", "crawler_data.db")
 
 # Global connection pool (for reuse)
 _connection = None

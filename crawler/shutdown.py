@@ -7,6 +7,9 @@ import signal
 import time
 from loguru import logger
 
+# Flag to track shutdown requests
+_shutdown_requested = False
+
 
 class GracefulShutdown:
     """Manages graceful shutdown of worker tasks."""
@@ -65,21 +68,25 @@ class GracefulShutdown:
 shutdown_controller = GracefulShutdown()
 
 
-async def shutdown_signal_handler():
-    """Handle shutdown signals."""
-    global crawler_running  # This will be imported from the global state module
+# Global flag for signal handlers (which are synchronous)
+def signal_handler(signum, frame):
+    """Synchronous signal handler that sets a global flag."""
+    global _shutdown_requested
     logger.info("\nReceived exit signal. Shutting down gracefully...")
-    crawler_running = False
-    await shutdown_controller.request_shutdown()
+    _shutdown_requested = True
+
+
+async def check_for_shutdown():
+    """Async function to check if a shutdown was requested by signal handler."""
+    global _shutdown_requested
+    if _shutdown_requested:
+        _shutdown_requested = False  # Reset flag
+        await shutdown_controller.request_shutdown()
+        return True
+    return False
 
 
 def setup_signal_handlers():
     """Set up signal handlers for graceful shutdown."""
-    signal.signal(
-        signal.SIGINT,
-        lambda signum, frame: asyncio.create_task(shutdown_signal_handler()),
-    )
-    signal.signal(
-        signal.SIGTERM,
-        lambda signum, frame: asyncio.create_task(shutdown_signal_handler()),
-    )
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)

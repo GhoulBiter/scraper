@@ -38,8 +38,8 @@ class Config:
     #
 
     # Depth limits
-    MAX_DEPTH = 12  # Regular crawl depth
-    MAX_ADMISSION_DEPTH = 15  # Deeper crawl for admission-related domains
+    MAX_DEPTH = 15  # Regular crawl depth
+    MAX_ADMISSION_DEPTH = 20  # Deeper crawl for admission-related domains
 
     # Request settings
     REQUEST_TIMEOUT = 15  # Seconds

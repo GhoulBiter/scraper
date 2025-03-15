@@ -60,20 +60,44 @@ def save_results(
 
 
 def generate_summary_report(
-    evaluated_collection: ApplicationPageCollection,
+    evaluated_applications: List[Dict],
     output_file: str,
     api_metrics: Optional[Dict] = None,
 ) -> None:
-    """Generate a summary report of the findings."""
+    """Generate a summary report of the findings with categorization."""
 
-    # Get actual application pages
-    actual_apps = evaluated_collection.filter_actual_applications()
+    # Handle both dictionaries and ApplicationPage objects
+    def get_value(app, field, default=None):
+        if isinstance(app, dict):
+            return app.get(field, default)
+        else:
+            return getattr(app, field, default)
+
+    # Count by category
+    category_counts = {
+        "direct_application": 0,
+        "application_instructions": 0,
+        "external_application_reference": 0,
+        "information_only": 0,
+    }
+
+    for app in evaluated_applications:
+        app_type = get_value(app, "application_type", "information_only")
+        if app_type in category_counts:
+            category_counts[app_type] += 1
+
+    # Get unique universities visited
+    universities_visited = list(
+        set(get_value(app, "university") for app in evaluated_applications)
+    )
 
     # Group by university
-    by_university = evaluated_collection.group_by_university()
-
-    # Get unique universities
-    universities_visited = list(by_university.keys())
+    by_university = {}
+    for app in evaluated_applications:
+        univ = get_value(app, "university")
+        if univ not in by_university:
+            by_university[univ] = []
+        by_university[univ].append(app)
 
     with open(output_file, "w") as f:
         # Add API metrics if available
@@ -91,41 +115,81 @@ def generate_summary_report(
         # Main summary
         f.write("=== University Application Pages Summary ===\n\n")
         f.write(f"Universities Visited: {', '.join(universities_visited)}\n")
-        f.write(f"Total application pages found: {len(evaluated_collection.pages)}\n")
-        f.write(f"Actual application pages (AI evaluated): {len(actual_apps)}\n\n")
+        f.write(f"Total application pages found: {len(evaluated_applications)}\n")
+
+        # Breakdown by category
+        f.write("\n=== Pages by Category ===\n")
+        f.write(f"Direct Application Pages: {category_counts['direct_application']}\n")
+        f.write(
+            f"Application Instructions Pages: {category_counts['application_instructions']}\n"
+        )
+        f.write(
+            f"External Application References: {category_counts['external_application_reference']}\n"
+        )
+        f.write(f"Information Only Pages: {category_counts['information_only']}\n\n")
 
         # Details by university
         for univ, apps in by_university.items():
             f.write(f"== {univ}: {len(apps)} application pages ==\n")
 
-            # First list actual application pages
-            f.write("\n--- ACTUAL APPLICATION PAGES ---\n")
-            actual_apps = [app for app in apps if app.is_actual_application]
-            for i, app in enumerate(actual_apps, 1):
-                f.write(
-                    f"{i}. {app.title}\n   {app.url}\n   Evaluation: {app.ai_evaluation}\n\n"
-                )
+            # Group by category for this university
+            categories = {
+                "direct_application": [],
+                "application_instructions": [],
+                "external_application_reference": [],
+                "information_only": [],
+            }
 
-            # Then list information/other pages
-            f.write("\n--- INFORMATION/OTHER PAGES ---\n")
-            info_apps = [app for app in apps if not app.is_actual_application]
-            for i, app in enumerate(info_apps, 1):
-                f.write(
-                    f"{i}. {app.title}\n   {app.url}\n   Evaluation: {app.ai_evaluation}\n\n"
-                )
+            for app in apps:
+                app_type = get_value(app, "application_type", "information_only")
+                if app_type in categories:
+                    categories[app_type].append(app)
+
+            # Direct application pages
+            if categories["direct_application"]:
+                f.write("\n--- DIRECT APPLICATION PAGES ---\n")
+                for i, app in enumerate(categories["direct_application"], 1):
+                    f.write(
+                        f"{i}. {get_value(app, 'title')}\n   {get_value(app, 'url')}\n   Evaluation: {get_value(app, 'ai_evaluation')}\n\n"
+                    )
+
+            # Application instructions
+            if categories["application_instructions"]:
+                f.write("\n--- APPLICATION INSTRUCTIONS PAGES ---\n")
+                for i, app in enumerate(categories["application_instructions"], 1):
+                    f.write(
+                        f"{i}. {get_value(app, 'title')}\n   {get_value(app, 'url')}\n   Evaluation: {get_value(app, 'ai_evaluation')}\n\n"
+                    )
+
+            # External application references
+            if categories["external_application_reference"]:
+                f.write("\n--- EXTERNAL APPLICATION REFERENCES ---\n")
+                for i, app in enumerate(
+                    categories["external_application_reference"], 1
+                ):
+                    f.write(
+                        f"{i}. {get_value(app, 'title')}\n   {get_value(app, 'url')}\n   Evaluation: {get_value(app, 'ai_evaluation')}\n\n"
+                    )
+
+            # Information only pages
+            if categories["information_only"]:
+                f.write("\n--- INFORMATION ONLY PAGES ---\n")
+                for i, app in enumerate(categories["information_only"], 1):
+                    f.write(
+                        f"{i}. {get_value(app, 'title')}\n   {get_value(app, 'url')}\n   Evaluation: {get_value(app, 'ai_evaluation')}\n\n"
+                    )
 
 
-def export_to_csv(applications: List[Dict], output_file: str) -> None:
-    """Export application pages to CSV format."""
-    # Convert to ApplicationPage collection
-    app_collection = ApplicationPageCollection.from_dict_list(applications)
-
+def export_to_csv(applications: List[Any], output_file: str) -> None:
+    """Export application pages to CSV format with categorization."""
     # Define fields to include
     fields = [
         "url",
         "title",
         "university",
         "is_actual_application",
+        "application_type",
+        "category",
         "ai_evaluation",
         "depth",
     ]
@@ -134,12 +198,14 @@ def export_to_csv(applications: List[Dict], output_file: str) -> None:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
 
-        for app in app_collection.pages:
-            # Convert ApplicationPage to dict
-            app_dict = app.to_dict()
-
-            # Create a row with just the fields we want
-            row = {field: app_dict.get(field, "") for field in fields}
+        for app in applications:
+            # Handle both dictionaries and ApplicationPage objects
+            if isinstance(app, dict):
+                # Create a row with just the fields we want
+                row = {field: app.get(field, "") for field in fields}
+            else:
+                # It's an ApplicationPage object
+                row = {field: getattr(app, field, "") for field in fields}
 
             # Convert boolean to string value
             if "is_actual_application" in row:
@@ -147,11 +213,19 @@ def export_to_csv(applications: List[Dict], output_file: str) -> None:
                     "Yes" if row["is_actual_application"] else "No"
                 )
 
+            # Convert category number to a more readable form if it's an integer
+            if "category" in row and isinstance(row["category"], int):
+                category_map = {
+                    1: "Direct Application",
+                    2: "Instructions",
+                    3: "External Reference",
+                    4: "Information Only",
+                }
+                row["category"] = category_map.get(row["category"], row["category"])
+
             writer.writerow(row)
 
-    logger.info(
-        f"Exported {len(app_collection.pages)} application pages to {output_file}"
-    )
+    logger.info(f"Exported {len(applications)} application pages to {output_file}")
 
 
 def update_metrics_in_summary(
