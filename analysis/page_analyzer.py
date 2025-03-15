@@ -8,6 +8,38 @@ from urllib.parse import urlparse
 from loguru import logger
 from config import Config
 
+# Dictionary of known application systems with their identifiers
+EXTERNAL_APPLICATION_SYSTEMS = {
+    "ucas": [
+        "ucas.com",
+        "ucas application",
+        "ucas form",
+        "ucas portal",
+        "ucas code",
+        "apply through ucas",
+    ],
+    "common_app": [
+        "commonapp.org",
+        "common app",
+        "common application",
+        "commonapp",
+        "apply via common app",
+    ],
+    "coalition": [
+        "coalitionapp",
+        "coalition application",
+        "coalition for college",
+        "mycoalition",
+    ],
+    "applytexas": ["applytexas", "apply texas"],
+    "cal_state": ["calstate.edu/apply", "cal state apply", "csu apply"],
+    "ouac": ["ouac.on.ca", "ontario universities", "ouac form", "ouac application"],
+    "uac": ["uac.edu.au", "universities admissions centre", "uac application"],
+    "studylink": ["studylink.govt.nz", "study link application"],
+    "uni_assist": ["uni-assist.de", "uniassist", "uni assist application"],
+    "postgrad": ["postgraduateapply", "gradcas", "graduate application system"],
+}
+
 
 def extract_title(html):
     """Extract page title from HTML with Unicode support."""
@@ -32,7 +64,6 @@ def extract_title(html):
 
 def is_application_page(url, html, title=""):
     """Check if a page is likely an application page."""
-
     if not html:
         return False, []
 
@@ -113,9 +144,7 @@ def is_application_page(url, html, title=""):
     for indicator in Config.APPLICATION_FORM_INDICATORS:
         pattern = re.escape(indicator)
         if re.search(
-            f"<(a|button)[^>]*>(.*?{pattern}.*?)</(a|button)>",
-            html,
-            re.IGNORECASE,
+            f"<(a|button)[^>]*>(.*?{pattern}.*?)</(a|button)>", html, re.IGNORECASE
         ):
             reasons.append(f"Contains application button/link with text '{indicator}'")
             score += 4
@@ -135,6 +164,59 @@ def is_application_page(url, html, title=""):
     ):
         reasons.append("Page contains applicant login elements")
         score += 4
+
+    # Check for external application system references
+    external_system_found = False
+    external_system_name = None
+    for system, identifiers in EXTERNAL_APPLICATION_SYSTEMS.items():
+        for identifier in identifiers:
+            if identifier in html.lower():
+                external_system_found = True
+                external_system_name = system
+                reasons.append(f"References external application system: {identifier}")
+                score += 4
+                break
+        if external_system_found:
+            break
+
+    # Check for university-specific application portal references
+    portal_patterns = [
+        r"my\s*\w+\s*application",  # "My Cambridge Application", "My Stanford Application"
+        r"\w+\s*application\s*portal",  # "University Application Portal"
+        r"application\s*system",
+        r"applicant\s*portal",
+        r"application\s*portal",
+        r"application\s*account",
+        r"application\s*platform",
+        r"apply\s*online",
+        r"online\s*application\s*(form|system)",
+    ]
+
+    for pattern in portal_patterns:
+        if re.search(pattern, html.lower()):
+            reasons.append(
+                f"Contains reference to application portal: {re.search(pattern, html.lower()).group(0)}"
+            )
+            score += 3
+
+    # Check for application process instructions
+    instruction_patterns = [
+        r"(how|steps)\s*to\s*apply",
+        r"application\s*(process|procedure|instructions)",
+        r"application\s*(deadline|due date)",
+        r"(submit|complete)\s*your\s*application",
+        r"after\s*(you|submitting)\s*(submit|application)",
+        r"before\s*(you|submitting)\s*(submit|application)",
+        r"(application|institution|college|program)\s*code",
+        r"application\s*checklist",
+    ]
+
+    for pattern in instruction_patterns:
+        if re.search(pattern, html.lower()):
+            reasons.append(
+                f"Contains application instructions: {re.search(pattern, html.lower()).group(0)}"
+            )
+            score += 2
 
     # Return based on confidence score
     return score >= 3, reasons
