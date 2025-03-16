@@ -144,26 +144,29 @@ async def evaluate_application_page(app_page):
             3. INFORMATION ONLY: Contains general information but no specific application instructions or requirements
 
             Look carefully for:
-            - References to external application systems or portals (UCAS, Common App, Coalition App, etc.)
+            - References to external application systems or portals (UCAS, Common App, Coalition App, UC Application, ApplyTexas, Cal State Apply, etc.)
             - Multi-step application instructions or workflows
             - Application deadlines and requirements
             - Specific codes or identifiers needed for applications (institution codes, program codes)
             - Links or references to university-specific application portals or systems
             - Instructions on what happens after submitting an initial application
+            - Whether this is for undergraduate or graduate/doctoral programs
 
             Your task:
             - Respond with TRUE if this is category 1 or 2 (directly useful for applying)
             - Respond with FALSE if this is category 3 (just information)
             - Then provide a brief explanation for your decision and identify which category (1-3) it belongs to
             - If you find any specific external application systems (UCAS, Common App, etc.), institution codes, or program codes, mention them explicitly.
+            - Determine if this is for undergraduate, graduate, or doctoral programs.
 
             Format your response like this:
             RESULT: TRUE/FALSE
             CATEGORY: 1/2/3
             EXPLANATION: Your explanation here
-            EXTERNAL_SYSTEMS: List any external systems mentioned (UCAS, Common App, etc.) or NONE
+            EXTERNAL_SYSTEMS: List any external systems mentioned (UCAS, Common App, UC Application, etc.) or NONE
             INSTITUTION_CODE: Any institution codes found or NONE
             PROGRAM_CODE: Any program codes found or NONE
+            EDUCATION_LEVEL: undergraduate/graduate/doctoral/unknown
             """
 
             user_prompt = f"""
@@ -175,6 +178,10 @@ async def evaluate_application_page(app_page):
             Page Title: {app_page['title']}
             URL: {app_page['url']}
             Detected Reasons: {', '.join(app_page['reasons'])}
+            
+            Please be extremely precise in identifying if this is for undergraduate applications or graduate/doctoral programs. Specifically look for terms like "undergraduate", "freshmen", "first-year", "transfer" for undergraduate, versus "graduate", "master's", "PhD", "doctoral" for graduate programs.
+            
+            Also carefully identify any external application systems (like UCAS for UK universities, Common App for US colleges, UC Application for University of California campuses, etc.) that are mentioned or referenced.
             """
 
             # Use the synchronous API but run it in a separate thread to keep things async
