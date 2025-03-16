@@ -54,6 +54,28 @@ class Config:
     NUM_WORKERS = 12  # Number of concurrent worker tasks
 
     #
+    # Checkpoint Settings
+    #
+
+    # Whether to use incremental checkpoints (process in batches during crawling)
+    USE_CHECKPOINTS = True
+
+    # Time between checkpoint evaluations in seconds
+    CHECKPOINT_INTERVAL = 60
+
+    # Minimum number of application pages to trigger batch evaluation
+    MIN_BATCH_SIZE = 10
+
+    # Maximum number of pages to process in one batch
+    MAX_BATCH_SIZE = 30
+
+    # Directory to store checkpoint data
+    CHECKPOINT_DIR = "checkpoints"  # Relative to OUTPUT_DIR
+
+    # Whether to generate incremental reports at each checkpoint
+    CHECKPOINT_REPORTS = True
+
+    #
     # Application Keywords and Indicators
     #
 
@@ -243,6 +265,9 @@ class Config:
     SAVE_HTML_REPORT = False  # Whether to generate HTML report
     SAVE_CSV = False  # Whether to export to CSV
 
+    # Add How-to-Apply report generation
+    GENERATE_HOW_TO_APPLY = True  # Whether to generate focused "How to Apply" report
+
     #
     # Logging Settings
     #
@@ -270,6 +295,20 @@ class Config:
             )
             return False
 
+        # Validate checkpoint settings
+        if cls.USE_CHECKPOINTS:
+            if cls.MIN_BATCH_SIZE <= 0:
+                print("ERROR: MIN_BATCH_SIZE must be greater than 0")
+                return False
+            if cls.MAX_BATCH_SIZE < cls.MIN_BATCH_SIZE:
+                print(
+                    "ERROR: MAX_BATCH_SIZE must be greater than or equal to MIN_BATCH_SIZE"
+                )
+                return False
+            if cls.CHECKPOINT_INTERVAL <= 0:
+                print("ERROR: CHECKPOINT_INTERVAL must be greater than 0")
+                return False
+
         return True
 
     @classmethod
@@ -282,6 +321,9 @@ class Config:
             "num_workers": cls.NUM_WORKERS,
             "model": cls.MODEL_NAME,
             "use_database": cls.USE_SQLITE,
+            "use_checkpoints": cls.USE_CHECKPOINTS,
+            "checkpoint_interval": cls.CHECKPOINT_INTERVAL,
+            "batch_size": f"{cls.MIN_BATCH_SIZE}-{cls.MAX_BATCH_SIZE}",
         }
 
     @classmethod
@@ -295,4 +337,52 @@ class Config:
         print(f"Workers: {summary['num_workers']}")
         print(f"Model: {summary['model']}")
         print(f"Using database: {summary['use_database']}")
+
+        # Add checkpoint settings to summary
+        if cls.USE_CHECKPOINTS:
+            print(f"Checkpoint interval: {summary['checkpoint_interval']}s")
+            print(f"Batch size: {summary['batch_size']}")
+        else:
+            print("Checkpoints: Disabled")
+
         print("============================\n")
+
+    @classmethod
+    def update_from_args(cls, args):
+        """Update configuration from command line arguments."""
+        # Update basic settings
+        if hasattr(args, "depth"):
+            cls.MAX_DEPTH = args.depth
+        if hasattr(args, "workers"):
+            cls.NUM_WORKERS = args.workers
+        if hasattr(args, "max_urls"):
+            cls.MAX_TOTAL_URLS = args.max_urls
+        if hasattr(args, "model"):
+            cls.MODEL_NAME = args.model
+        if hasattr(args, "use_db"):
+            cls.USE_SQLITE = args.use_db
+        if hasattr(args, "html_report"):
+            cls.SAVE_HTML_REPORT = args.html_report
+        if hasattr(args, "csv"):
+            cls.SAVE_CSV = args.csv
+
+        # Update checkpoint settings
+        if hasattr(args, "disable_checkpoints"):
+            cls.USE_CHECKPOINTS = not args.disable_checkpoints
+        if hasattr(args, "checkpoint_interval"):
+            cls.CHECKPOINT_INTERVAL = args.checkpoint_interval
+        if hasattr(args, "min_batch_size"):
+            cls.MIN_BATCH_SIZE = args.min_batch_size
+        if hasattr(args, "max_batch_size"):
+            cls.MAX_BATCH_SIZE = args.max_batch_size
+
+        # Output directory
+        if hasattr(args, "output_dir"):
+            cls.OUTPUT_DIR = args.output_dir
+            cls.REPORT_DIR = os.path.join(args.output_dir, "reports")
+
+        # Update logging settings
+        if hasattr(args, "log_level"):
+            cls.LOG_LEVEL = args.log_level
+        if hasattr(args, "log_file"):
+            cls.LOG_FILE = args.log_file

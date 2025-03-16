@@ -10,8 +10,11 @@ import os
 import sys
 import signal
 import time
+import atexit
 from datetime import datetime
 import uuid
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import aiohttp
 from loguru import logger
@@ -21,11 +24,20 @@ from utils.logging_config import configure_logging
 from crawler.queue import UniqueURLQueue
 from crawler.worker import start_workers
 from crawler.monitor import monitor_progress, explore_specific_application_paths
-from crawler.shutdown import check_for_shutdown, setup_signal_handlers
+from crawler.shutdown import (
+    check_for_shutdown,
+    setup_signal_handlers,
+    shutdown_controller,
+)
 from analysis.ai_evaluator import evaluate_all_applications, get_api_metrics
 from output.exporter import save_results
 from output.report_generator import ReportGenerator
-from database.db_operations import init_database, start_crawl_run, end_crawl_run
+from database.db_operations import (
+    init_database,
+    start_crawl_run,
+    end_crawl_run,
+    close_connection,
+)
 from database.metrics_storage import (
     save_metrics_to_db,
     save_application_pages,
@@ -34,6 +46,12 @@ from database.metrics_storage import (
 from models.crawl_stats import CrawlStats, APIMetrics
 from models.state_manager import state_manager  # Use the global instance
 from models.checkpoint_manager import CheckpointManager  # New import for checkpointing
+
+# Global shutdown flag for force exit
+_force_exit_event = threading.Event()
+
+# Global thread pool executor for API calls
+api_executor = ThreadPoolExecutor(max_workers=Config.MAX_CONCURRENT_API_CALLS)
 
 
 def parse_arguments():
@@ -139,6 +157,14 @@ def parse_arguments():
         help="Disable incremental checkpoints (process all at once)",
     )
 
+    # Shutdown options
+    parser.add_argument(
+        "--shutdown-timeout",
+        type=int,
+        default=30,  # Default: 30 seconds before force exit
+        help="Timeout in seconds before forcing program termination on shutdown (default: 30)",
+    )
+
     return parser.parse_args()
 
 
@@ -201,10 +227,84 @@ async def prepare_url_queue(url_queue):
                     await url_queue.put((0, path_url, Config.MAX_DEPTH, university))
 
 
+# Function to force exit after timeout
+def force_exit():
+    """Force program termination after timeout."""
+    if _force_exit_event.is_set():
+        logger.critical("Force exit timeout reached. Terminating immediately.")
+        os._exit(1)  # Force exit with error code
+
+
+# Improved signal handler that sets a timer for force exit
+def enhanced_signal_handler(signum, frame, timeout=30):
+    """Signal handler with force exit capability."""
+    logger.warning(
+        f"\nReceived exit signal. Will force exit in {timeout} seconds if graceful shutdown fails."
+    )
+
+    # Set the force exit event
+    _force_exit_event.set()
+
+    # Start a timer for force exit
+    timer = threading.Timer(timeout, force_exit)
+    timer.daemon = True
+    timer.start()
+
+    # Also trigger the regular shutdown process
+    asyncio.create_task(shutdown_controller.request_shutdown())
+
+
+async def shutdown_resources():
+    """Clean up resources during shutdown."""
+    try:
+        # Close database connection if it was used
+        if Config.USE_SQLITE:
+            await close_connection()
+            logger.info("Database connection closed")
+
+        # Shutdown thread pool executor
+        api_executor.shutdown(wait=False)
+        logger.info("Thread pool executor shutdown initiated")
+
+    except Exception as e:
+        logger.error(f"Error during resource cleanup: {e}")
+
+
 async def main():
     """Main application function."""
     # Parse arguments
     args = parse_arguments()
+
+    # Configure signal handlers with timeout for force exit
+    signal.signal(
+        signal.SIGINT,
+        lambda signum, frame: enhanced_signal_handler(
+            signum, frame, args.shutdown_timeout
+        ),
+    )
+    signal.signal(
+        signal.SIGTERM,
+        lambda signum, frame: enhanced_signal_handler(
+            signum, frame, args.shutdown_timeout
+        ),
+    )
+
+    # Create a synchronous cleanup function for atexit
+    def shutdown_resources_sync():
+        """Synchronous resource cleanup for atexit."""
+        try:
+            # Shutdown thread pool executor
+            api_executor.shutdown(wait=False)
+            print("Thread pool executor shutdown completed")
+
+            # Note: We can't close the database connection here because it's async
+            # Database connections will be closed in the main function's finally block
+
+        except Exception as e:
+            print(f"Error during sync resource cleanup: {e}")
+
+    # Register the synchronous cleanup function with atexit
+    atexit.register(shutdown_resources_sync)
 
     # Configure logging
     configure_logging(log_file=args.log_file, log_level=args.log_level)
@@ -350,7 +450,7 @@ async def main():
             try:
                 # Wait for queue to be empty or max URLs to be reached
                 while await state_manager.is_crawler_running():
-                    if await check_for_shutdown():
+                    if await check_for_shutdown() or _force_exit_event.is_set():
                         state_manager.stop_crawler()
                         break
 
@@ -386,9 +486,10 @@ async def main():
                 if checkpoint_manager:
                     await process_checkpoint_batch()
 
-                # Give workers time to finish current tasks
+                # Give workers time to finish current tasks with timeout
                 try:
-                    await asyncio.wait_for(url_queue.join(), timeout=10)
+                    await asyncio.wait_for(url_queue.join(), timeout=5)
+                    logger.info("Queue joined successfully")
                 except asyncio.TimeoutError:
                     logger.warning("Timeout waiting for queue to empty")
 
@@ -400,22 +501,34 @@ async def main():
                 # Request workers to stop
                 await state_manager.stop_crawler()
 
-                # Cancel workers and monitor
+                # Cancel workers and monitor with a timeout
                 for w in workers:
                     w.cancel()
 
                 monitor_task.cancel()
 
-                # Wait for cancellation to complete
-                await asyncio.gather(*workers, monitor_task, return_exceptions=True)
+                # Wait for cancellation to complete with timeout
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*workers, monitor_task, return_exceptions=True),
+                        timeout=10,
+                    )
+                    logger.info("All tasks cancelled successfully")
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout waiting for tasks to cancel")
 
             # Explore specific application paths if admission domains were found
             admission_domains = await state_manager.get_admission_domains()
-            if admission_domains:
+            if admission_domains and not _force_exit_event.is_set():
                 logger.info(
                     "Exploring specific application paths on admission domains..."
                 )
-                await explore_specific_application_paths()
+                try:
+                    await asyncio.wait_for(
+                        explore_specific_application_paths(), timeout=30
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout exploring application paths")
 
             # Get all evaluated applications if checkpointing was used
             evaluated_results = []
@@ -442,16 +555,28 @@ async def main():
                 )
                 found_applications = remaining_applications
 
-            if found_applications and not evaluated_results:
+            if (
+                found_applications
+                and not evaluated_results
+                and not _force_exit_event.is_set()
+            ):
                 logger.info(
                     f"Found {len(found_applications)} potential application pages"
                 )
 
                 if not args.skip_evaluation:
                     try:
-                        evaluated_results = await evaluate_all_applications(
-                            found_applications
-                        )
+                        # Process with timeout
+                        try:
+                            evaluated_results = await asyncio.wait_for(
+                                evaluate_all_applications(found_applications),
+                                timeout=60,  # 1 minute timeout
+                            )
+                        except asyncio.TimeoutError:
+                            logger.error(
+                                "Timeout during evaluation, proceeding with partial results"
+                            )
+                            evaluated_results = found_applications
 
                         if evaluated_results:
                             actual_count = sum(
@@ -495,7 +620,7 @@ async def main():
                 logger.success(f"Results saved to {args.output_dir}")
 
                 # Generate "How to Apply" report
-                if evaluated_results:
+                if evaluated_results and not _force_exit_event.is_set():
                     try:
                         from output.how_to_apply_report import (
                             generate_how_to_apply_report,
@@ -520,7 +645,11 @@ async def main():
                         logger.error(f"Error generating How to Apply report: {e}")
 
                 # Generate HTML report if requested
-                if args.html_report and evaluated_results:
+                if (
+                    args.html_report
+                    and evaluated_results
+                    and not _force_exit_event.is_set()
+                ):
                     try:
                         report_generator = ReportGenerator(
                             output_dir=os.path.join(args.output_dir, "reports")
@@ -535,7 +664,7 @@ async def main():
                         logger.error(f"Error generating HTML report: {e}")
 
                 # Export to CSV if requested
-                if args.csv and evaluated_results:
+                if args.csv and evaluated_results and not _force_exit_event.is_set():
                     try:
                         from output.exporter import export_to_csv
 
@@ -552,7 +681,7 @@ async def main():
                 logger.error(f"Error saving results: {e}")
 
             # Update database with final stats if enabled
-            if Config.USE_SQLITE:
+            if Config.USE_SQLITE and not _force_exit_event.is_set():
                 try:
                     counters = await state_manager.get_counters()
                     await end_crawl_run(
@@ -581,15 +710,35 @@ async def main():
     except Exception as e:
         logger.error(f"Unhandled exception in main: {e}")
     finally:
+        # Final cleanup
+        try:
+            # Close the database connection
+            if Config.USE_SQLITE:
+                await close_connection()
+                logger.info("Database connection closed")
+
+            # Shutdown the thread pool executor
+            api_executor.shutdown(wait=False)
+            logger.info("Thread pool executor shutdown requested")
+
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+
         logger.success(f"Crawler run {run_id} completed")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+        # If we've reached here, the program has exited normally
+        logger.info("Program finished gracefully")
+
     except KeyboardInterrupt:
         print("\nProgram stopped by user")
-        sys.exit(0)
+        # Force exit after keyboard interrupt to ensure termination
+        if not _force_exit_event.is_set():
+            print("Forcing program termination...")
+            os._exit(0)
     except Exception as e:
         print(f"Unhandled exception: {e}")
         sys.exit(1)
