@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
 """
 University Application Crawler - Main Application Entry Point
 
 This script runs the crawler to find university application pages.
 """
+
 import asyncio
 import argparse
 import os
@@ -33,6 +33,7 @@ from database.metrics_storage import (
 )
 from models.crawl_stats import CrawlStats, APIMetrics
 from models.state_manager import state_manager  # Use the global instance
+from models.checkpoint_manager import CheckpointManager  # New import for checkpointing
 
 
 def parse_arguments():
@@ -111,6 +112,31 @@ def parse_arguments():
     )
     parser.add_argument(
         "--log-file", default="crawler.log", help="Log file path (default: crawler.log)"
+    )
+
+    # Checkpoint options
+    parser.add_argument(
+        "--checkpoint-interval",
+        type=int,
+        default=60,  # Default: check every 60 seconds
+        help="Time between checkpoint evaluations in seconds (default: 60)",
+    )
+    parser.add_argument(
+        "--min-batch-size",
+        type=int,
+        default=10,  # Default: minimum 10 pages to process
+        help="Minimum number of pages to trigger a checkpoint (default: 10)",
+    )
+    parser.add_argument(
+        "--max-batch-size",
+        type=int,
+        default=30,  # Default: maximum 30 pages per batch
+        help="Maximum number of pages to process in one batch (default: 30)",
+    )
+    parser.add_argument(
+        "--disable-checkpoints",
+        action="store_true",
+        help="Disable incremental checkpoints (process all at once)",
     )
 
     return parser.parse_args()
@@ -224,6 +250,94 @@ async def main():
     # Initialize URL queue with seed URLs
     await prepare_url_queue(url_queue)
 
+    # Initialize checkpoint manager if checkpoints are enabled
+    checkpoint_manager = None
+    if not args.disable_checkpoints:
+        checkpoint_manager = CheckpointManager(
+            run_id=run_id,
+            output_dir=args.output_dir,
+            checkpoint_interval=args.checkpoint_interval,
+            min_batch_size=args.min_batch_size,
+            max_batch_size=args.max_batch_size,
+        )
+        # Make checkpoint manager accessible via state manager for monitoring
+        state_manager.checkpoint_manager = checkpoint_manager
+        logger.info(
+            f"Checkpointing enabled: interval={args.checkpoint_interval}s, batch size={args.min_batch_size}-{args.max_batch_size}"
+        )
+    else:
+        logger.info("Checkpointing disabled - will process all pages at the end")
+
+    # Setup for checkpoint processing
+    async def process_checkpoint_batch():
+        """Process a batch of pending application pages."""
+        if not checkpoint_manager:
+            return
+
+        # Get a batch for processing
+        batch = await checkpoint_manager.get_batch_for_processing()
+
+        if not batch:
+            logger.debug("No application pages to process in this batch")
+            return
+
+        logger.info(f"Processing checkpoint batch of {len(batch)} application pages")
+
+        # Only evaluate if not skipping evaluation
+        if not args.skip_evaluation:
+            try:
+                # Evaluate the batch
+                evaluated_batch = await evaluate_all_applications(batch)
+
+                # Store results
+                await checkpoint_manager.add_evaluated_applications(evaluated_batch)
+
+                # Save to database if enabled
+                if Config.USE_SQLITE:
+                    await save_application_pages(evaluated_batch, run_id)
+
+                actual_count = sum(
+                    1
+                    for app in evaluated_batch
+                    if app.get("is_actual_application", False)
+                )
+                logger.success(
+                    f"Checkpoint: Identified {actual_count} actual application pages out of {len(evaluated_batch)} candidates"
+                )
+
+                # Save crawler state
+                await checkpoint_manager.save_crawler_state(state_manager)
+
+            except Exception as e:
+                logger.error(f"Error processing checkpoint batch: {e}")
+        else:
+            # If skipping evaluation, just store the batch
+            await checkpoint_manager.add_evaluated_applications(batch)
+            logger.info(
+                f"Checkpoint: Stored {len(batch)} unevaluated application pages (evaluation skipped)"
+            )
+
+    # Override add_application_page to use checkpointing
+    if checkpoint_manager:
+        original_add_application_page = state_manager.add_application_page
+
+        async def add_application_page_with_checkpoint(page):
+            """
+            Wrapper for state_manager.add_application_page that also adds to checkpoint manager.
+            """
+            # Call the original method
+            await original_add_application_page(page)
+
+            # Add to checkpoint manager
+            should_process = await checkpoint_manager.add_application_page(page)
+
+            # If we should process a batch, do it now
+            if should_process:
+                await process_checkpoint_batch()
+
+        # Replace the original method
+        state_manager.add_application_page = add_application_page_with_checkpoint
+
     try:
         # Start crawler
         async with aiohttp.ClientSession() as session:
@@ -253,9 +367,24 @@ async def main():
                         await state_manager.stop_crawler()
                         break
 
+                    # Check for pending application pages that should be processed
+                    if (
+                        checkpoint_manager
+                        and await checkpoint_manager.should_process_batch()
+                    ):
+                        await process_checkpoint_batch()
+
+                    # Periodically save crawler state if checkpointing is enabled
+                    if checkpoint_manager:
+                        await checkpoint_manager.save_crawler_state(state_manager)
+
                     await asyncio.sleep(1)
 
                 logger.info("Crawler reached completion criteria")
+
+                # Process any remaining pending applications if checkpointing is enabled
+                if checkpoint_manager:
+                    await process_checkpoint_batch()
 
                 # Give workers time to finish current tasks
                 try:
@@ -288,11 +417,32 @@ async def main():
                 )
                 await explore_specific_application_paths()
 
-            # Evaluate application pages with AI
+            # Get all evaluated applications if checkpointing was used
             evaluated_results = []
-            found_applications = await state_manager.get_application_pages()
+            if checkpoint_manager:
+                logger.info("Retrieving evaluated applications from checkpoints")
+                evaluated_results = checkpoint_manager.get_all_evaluated_applications()
+                if evaluated_results:
+                    logger.info(
+                        f"Retrieved {len(evaluated_results)} evaluated applications from checkpoints"
+                    )
 
-            if found_applications:
+            # Process any remaining application pages
+            found_applications = await state_manager.get_application_pages()
+            # Remove any that have already been evaluated through checkpoints
+            if evaluated_results and found_applications:
+                evaluated_urls = {app.get("url") for app in evaluated_results}
+                remaining_applications = [
+                    app
+                    for app in found_applications
+                    if app.get("url") not in evaluated_urls
+                ]
+                logger.info(
+                    f"Found {len(found_applications)} total application pages, {len(remaining_applications)} not yet evaluated"
+                )
+                found_applications = remaining_applications
+
+            if found_applications and not evaluated_results:
                 logger.info(
                     f"Found {len(found_applications)} potential application pages"
                 )
@@ -325,14 +475,18 @@ async def main():
                 else:
                     logger.info("Skipping AI evaluation as requested")
                     evaluated_results = found_applications
-            else:
+            elif not found_applications and not evaluated_results:
                 logger.warning("No application pages found")
 
             # Save results
             try:
                 os.makedirs(args.output_dir, exist_ok=True)
+
+                # Use all application pages for original file
+                all_found_applications = await state_manager.get_application_pages()
+
                 original_file, evaluated_file, summary_file = save_results(
-                    found_applications,
+                    all_found_applications,
                     evaluated_results if evaluated_results else None,
                     get_api_metrics() if not args.skip_evaluation else None,
                     output_dir=args.output_dir,
@@ -340,27 +494,59 @@ async def main():
 
                 logger.success(f"Results saved to {args.output_dir}")
 
+                # Generate "How to Apply" report
+                if evaluated_results:
+                    try:
+                        from output.how_to_apply_report import (
+                            generate_how_to_apply_report,
+                            export_how_to_apply_csv,
+                        )
+
+                        md_file = os.path.join(
+                            args.output_dir,
+                            f"how_to_apply_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                        )
+                        csv_file = os.path.join(
+                            args.output_dir,
+                            f"how_to_apply_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        )
+                        generate_how_to_apply_report(
+                            evaluated_results, md_file, detailed=True
+                        )
+                        export_how_to_apply_csv(evaluated_results, csv_file)
+                        logger.success(f"How to Apply report generated: {md_file}")
+                        logger.success(f"How to Apply CSV generated: {csv_file}")
+                    except Exception as e:
+                        logger.error(f"Error generating How to Apply report: {e}")
+
                 # Generate HTML report if requested
                 if args.html_report and evaluated_results:
-                    report_generator = ReportGenerator(
-                        output_dir=os.path.join(args.output_dir, "reports")
-                    )
-                    report_file = await report_generator.generate_full_report(
-                        evaluated_results,
-                        crawl_stats.__dict__,
-                        get_api_metrics() if not args.skip_evaluation else None,
-                    )
-                    logger.success(f"HTML report generated: {report_file}")
+                    try:
+                        report_generator = ReportGenerator(
+                            output_dir=os.path.join(args.output_dir, "reports")
+                        )
+                        report_file = await report_generator.generate_full_report(
+                            evaluated_results,
+                            crawl_stats.__dict__,
+                            get_api_metrics() if not args.skip_evaluation else None,
+                        )
+                        logger.success(f"HTML report generated: {report_file}")
+                    except Exception as e:
+                        logger.error(f"Error generating HTML report: {e}")
 
                 # Export to CSV if requested
                 if args.csv and evaluated_results:
-                    from output.exporter import export_to_csv
+                    try:
+                        from output.exporter import export_to_csv
 
-                    csv_file = os.path.join(
-                        args.output_dir,
-                        f"applications_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    )
-                    export_to_csv(evaluated_results, csv_file)
+                        csv_file = os.path.join(
+                            args.output_dir,
+                            f"applications_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        )
+                        export_to_csv(evaluated_results, csv_file)
+                        logger.success(f"CSV export generated: {csv_file}")
+                    except Exception as e:
+                        logger.error(f"Error exporting to CSV: {e}")
 
             except Exception as e:
                 logger.error(f"Error saving results: {e}")
@@ -372,7 +558,11 @@ async def main():
                     await end_crawl_run(
                         run_id,
                         counters["visited"],
-                        len(found_applications),
+                        (
+                            len(all_found_applications)
+                            if "all_found_applications" in locals()
+                            else 0
+                        ),
                         (
                             len(
                                 [
