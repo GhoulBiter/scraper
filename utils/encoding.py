@@ -100,27 +100,6 @@ class EncodingHandler:
         # Last resort: force decode with replace
         return html_bytes.decode("utf-8", errors="replace")
 
-    @staticmethod
-    def normalize_url(url):
-        """Normalize URL for Unicode."""
-        try:
-            # Parse URL
-            parsed = urlparse(url)
-
-            # Normalize hostname using IDNA encoding
-            hostname = parsed.netloc.encode("idna").decode("ascii")
-
-            # Normalize path using percent-encoding
-            path = quote(parsed.path, safe="/%")
-
-            # Reconstruct URL
-            normalized = parsed._replace(netloc=hostname, path=path)
-            return normalized.geturl()
-
-        except Exception as e:
-            logger.warning(f"Error normalizing URL {url}: {e}")
-            return url
-
 
 class HTMLCleaner:
     """Helper class for cleaning and extracting content from HTML."""

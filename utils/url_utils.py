@@ -1,5 +1,5 @@
 """
-URL processing and validation utilities
+Standardized URL processing and validation utilities
 """
 
 import re
@@ -10,10 +10,126 @@ from loguru import logger
 from config import Config
 
 
+def normalize_url(url):
+    """
+    Enhanced URL normalization that prevents loops and cleans malformed URLs
+    """
+    if not url:
+        return url
+
+    try:
+        # Clean common problematic characters from URLs
+        # This handles cases where HTML or quotes get into URLs
+        for char in ["<", ">", '"', "'", "\\", "\n", "\r", "\t"]:
+            url = url.replace(char, "")
+
+        # Replace URL-encoded versions of these characters too
+        url = url.replace("%22", "")  # Encoded quote
+        url = url.replace("%3C", "")  # Encoded <
+        url = url.replace("%3E", "")  # Encoded >
+
+        # Parse URL
+        parsed = urlparse(url)
+
+        # Normalize scheme to lowercase
+        scheme = parsed.scheme.lower()
+        if not scheme:
+            scheme = "http"
+
+        # Remove fragment
+        parsed = parsed._replace(fragment="", scheme=scheme)
+
+        # Handle query parameters (remove tracking parameters)
+        if parsed.query:
+            query_dict = parse_qs(parsed.query)
+            # Remove common tracking parameters
+            for param in [
+                "utm_source",
+                "utm_medium",
+                "utm_campaign",
+                "utm_term",
+                "utm_content",
+                "fbclid",
+                "gclid",
+                "ref",
+                "source",
+                "mc_cid",
+                "mc_eid",
+                "_ga",
+            ]:
+                if param in query_dict:
+                    del query_dict[param]
+
+            # Rebuild query string in sorted order for consistency
+            if query_dict:
+                query_parts = []
+                for key in sorted(query_dict.keys()):
+                    for value in sorted(query_dict[key]):
+                        query_parts.append(f"{key}={value}")
+                new_query = "&".join(query_parts)
+            else:
+                new_query = ""
+
+            parsed = parsed._replace(query=new_query)
+
+        # Process and normalize the path
+        path = parsed.path
+
+        # Ensure path starts with / if it exists
+        if path and not path.startswith("/"):
+            path = "/" + path
+
+        # Remove trailing slash for non-root paths
+        if path.endswith("/") and len(path) > 1:
+            path = path[:-1]
+
+        # Fix repeating path segments - this addresses loop issues
+        path_parts = [p for p in path.split("/") if p]
+        clean_parts = []
+
+        for part in path_parts:
+            # Don't add if it would create a repeat
+            if not clean_parts or part != clean_parts[-1]:
+                clean_parts.append(part)
+
+        # Reconstruct the path
+        clean_path = "/" + "/".join(clean_parts)
+        if not clean_path or clean_path == "/":
+            clean_path = "/"
+
+        # URL-encode the path (preserving slashes)
+        clean_path = quote(clean_path, safe="/%")
+        parsed = parsed._replace(path=clean_path)
+
+        # Handle IDN domains (Unicode to Punycode)
+        hostname = parsed.netloc.encode("idna").decode("ascii")
+        parsed = parsed._replace(netloc=hostname)
+
+        # Final URL
+        final_url = parsed.geturl()
+
+        # One last safety check for max length
+        if len(final_url) > 2000:  # Common URL length limit
+            logger.warning(
+                f"URL exceeds maximum length, truncating: {final_url[:50]}..."
+            )
+            return final_url[:2000]
+
+        return final_url
+    except Exception as e:
+        logger.warning(f"Error normalizing URL {url}: {e}")
+        # Try to return something useful if possible
+        sanitized = re.sub(r'[<>"\'\\]', "", url)
+        return sanitized[:2000] if len(sanitized) > 2000 else sanitized
+
+
 def is_valid_url(url, config_obj=None):
     """Check if a URL should be crawled based on patterns and extensions."""
     # Use passed config or default to global Config
     cfg = config_obj or Config
+
+    if not url:
+        return False
 
     # Check for invalid schemes
     if not url.startswith(("http://", "https://")):
@@ -32,66 +148,6 @@ def is_valid_url(url, config_obj=None):
         return False
 
     return True
-
-
-def normalize_url(url):
-    """Normalize a URL to avoid duplicates."""
-    parsed = urlparse(url)
-
-    # Remove fragment
-    parsed = parsed._replace(fragment="")
-
-    # Handle query parameters (remove tracking parameters)
-    if parsed.query:
-        query_dict = parse_qs(parsed.query)
-        # Remove common tracking parameters
-        for param in [
-            "utm_source",
-            "utm_medium",
-            "utm_campaign",
-            "utm_term",
-            "utm_content",
-            "fbclid",
-            "gclid",
-        ]:
-            if param in query_dict:
-                del query_dict[param]
-
-        # Rebuild query string in sorted order for consistency
-        if query_dict:
-            query_parts = []
-            for key in sorted(query_dict.keys()):
-                for value in sorted(query_dict[key]):
-                    query_parts.append(f"{key}={value}")
-            new_query = "&".join(query_parts)
-        else:
-            new_query = ""
-
-        parsed = parsed._replace(query=new_query)
-
-    # Normalize the path (remove trailing slash)
-    path = parsed.path
-    if path.endswith("/") and len(path) > 1:
-        path = path[:-1]
-        parsed = parsed._replace(path=path)
-
-    # Ensure the scheme is lowercase
-    normalized_url = parsed.geturl()
-    if normalized_url.startswith("HTTP"):
-        normalized_url = "http" + normalized_url[4:]
-    elif normalized_url.startswith("HTTPS"):
-        normalized_url = "https" + normalized_url[5:]
-
-    # Handle IDN domains (Unicode to Punycode)
-    try:
-        parsed = urlparse(normalized_url)
-        hostname = parsed.netloc.encode("idna").decode("ascii")
-        path = quote(parsed.path, safe="/%")
-        normalized = parsed._replace(netloc=hostname, path=path)
-        return normalized.geturl()
-    except Exception as e:
-        logger.warning(f"Error normalizing URL {url}: {e}")
-        return normalized_url
 
 
 def join_url(base, relative):

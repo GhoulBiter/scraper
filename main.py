@@ -75,11 +75,11 @@ def parse_arguments():
         default="outputs",
         help="Directory to save outputs (default: outputs)",
     )
-    # parser.add_argument(
-    #     "--html-report",
-    #     action="store_true",
-    #     help="Generate HTML report with visualizations",
-    # )
+    parser.add_argument(
+        "--html-report",
+        action="store_true",
+        help="Generate HTML report with visualizations",
+    )
     parser.add_argument("--csv", action="store_true", help="Export results to CSV")
 
     # Database options

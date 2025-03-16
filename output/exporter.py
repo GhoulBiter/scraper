@@ -10,6 +10,10 @@ from typing import List, Dict, Tuple, Optional, Any
 
 from loguru import logger
 from models.application_page import ApplicationPage, ApplicationPageCollection
+from output.how_to_apply_report import (
+    generate_how_to_apply_report,
+    export_how_to_apply_csv,
+)
 
 
 def save_results(
@@ -287,3 +291,35 @@ def update_metrics_in_summary(
                 os.remove(temp_metrics_file)
             except:
                 pass
+
+
+def save_how_to_apply_report(
+    evaluated_applications, output_dir="outputs", detailed=False
+):
+    """
+    Generate and save a focused 'How to Apply' report
+
+    Args:
+        evaluated_applications: List of evaluated application pages
+        output_dir: Directory to save the report
+        detailed: Whether to include detailed analysis
+
+    Returns:
+        tuple: Paths to the generated report files (markdown, csv)
+    """
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Generate markdown report
+    md_file = os.path.join(output_dir, f"how_to_apply_{timestamp}.md")
+    generate_how_to_apply_report(evaluated_applications, md_file, detailed=detailed)
+
+    # Generate CSV
+    csv_file = os.path.join(output_dir, f"how_to_apply_{timestamp}.csv")
+    export_how_to_apply_csv(evaluated_applications, csv_file)
+
+    logger.success(f"How to Apply reports saved to {output_dir}")
+    return md_file, csv_file

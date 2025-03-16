@@ -15,24 +15,86 @@ from utils.encoding import EncodingHandler
 from analysis.page_analyzer import is_application_page, extract_title
 from analysis.link_extractor import (
     extract_links,
-    is_valid_url,
-    normalize_url,
 )
 from models.state_manager import state_manager
-from utils.url_utils import get_url_priority, is_related_domain
+from utils.url_utils import (
+    get_url_priority,
+    is_related_domain,
+    normalize_url,
+    is_valid_url,
+)
+
+
+class RedirectTracker:
+    """
+    Tracks redirects to detect and prevent redirect loops
+    """
+
+    def __init__(self, max_redirects=5):
+        self.redirect_chains = {}  # Maps original_url -> list of redirected URLs
+        self.max_redirects = max_redirects
+        self.lock = asyncio.Lock()
+
+    async def start_tracking(self, url):
+        """Start tracking redirects for a URL"""
+        async with self.lock:
+            self.redirect_chains[url] = [url]
+
+    async def add_redirect(self, original_url, redirected_url):
+        """Add a redirect to the chain"""
+        async with self.lock:
+            if original_url not in self.redirect_chains:
+                self.redirect_chains[original_url] = [original_url]
+
+            # Add the new redirect
+            self.redirect_chains[original_url].append(redirected_url)
+
+            # Check for loops
+            if self.redirect_chains[original_url].count(redirected_url) > 1:
+                logger.warning(
+                    f"Redirect loop detected for {original_url} -> {redirected_url}"
+                )
+                return False
+
+            # Check for maximum redirect chain length
+            if len(self.redirect_chains[original_url]) > self.max_redirects:
+                logger.warning(
+                    f"Maximum redirect chain length ({self.max_redirects}) exceeded for {original_url}"
+                )
+                return False
+
+            return True
+
+    async def get_redirect_chain(self, url):
+        """Get the redirect chain for a URL"""
+        async with self.lock:
+            return self.redirect_chains.get(url, [url])
+
+    async def is_in_redirect_chain(self, chain_url, target_url):
+        """Check if target_url is in the redirect chain of chain_url"""
+        async with self.lock:
+            chain = self.redirect_chains.get(chain_url, [])
+            return target_url in chain
+
+
+# Create a singleton instance to use throughout the application
+redirect_tracker = RedirectTracker()
 
 
 async def fetch_url(session, url, depth, university, url_queue):
-    """Fetch a URL and process its content."""
+    """Fetch a URL and process its content with redirect tracking."""
     # First check if the crawler is still running
     if not await state_manager.is_crawler_running():
         return
 
     # Normalize URL to handle Unicode
-    normalized_url = EncodingHandler.normalize_url(url)
+    normalized_url = normalize_url(url)
     if normalized_url != url:
         logger.info(f"Normalized URL: {url} -> {normalized_url}")
         url = normalized_url
+
+    # Start tracking redirects for this URL
+    await redirect_tracker.start_tracking(url)
 
     try:
         # Apply politeness delay
@@ -72,13 +134,24 @@ async def fetch_url(session, url, depth, university, url_queue):
                 logger.warning(f"Got status {response.status} for {url}")
                 return
 
+            # Track any redirects that occurred
+            if str(response.url) != url:
+                logger.info(f"Redirected: {url} -> {response.url}")
+
+                # Normalize the final URL
+                final_url = normalize_url(str(response.url))
+
+                # Add to redirect chain
+                if not await redirect_tracker.add_redirect(url, final_url):
+                    logger.warning(f"Skipping URL due to redirect issues: {url}")
+                    return
+
+                # Update the URL to the final redirected URL
+                url = final_url
+
             # Increment visited counter and track domain
             await state_manager.increment_visited_counter()
             await state_manager.increment_domain_count(domain)
-
-            # Log the final URL after any redirects
-            if str(response.url) != url:
-                logger.info(f"Redirected: {url} -> {response.url}")
 
             # Use encoding handler to properly decode HTML
             try:
@@ -118,6 +191,13 @@ async def fetch_url(session, url, depth, university, url_queue):
 
                 # Process these critical links with highest priority (depth doesn't matter)
                 for link in apply_links:
+                    # Check if this is in a redirect chain to prevent loops
+                    if await redirect_tracker.is_in_redirect_chain(url, link):
+                        logger.warning(
+                            f"Skipping link {link} - already in redirect chain"
+                        )
+                        continue
+
                     # Use a high priority value (0) for critical application links
                     await url_queue.put(
                         (0, link, Config.MAX_DEPTH, university)
@@ -178,7 +258,7 @@ async def find_critical_application_links(url, html):
 
 
 async def queue_links(links, depth, university, url_queue):
-    """Queue links for crawling with domain-specific rate limiting."""
+    """Queue links for crawling with redirect cycle detection."""
     # Check URL limit before processing
     if await state_manager.should_enforce_url_limit(Config.MAX_TOTAL_URLS):
         return
@@ -220,6 +300,12 @@ async def queue_links(links, depth, university, url_queue):
 
         # Skip if already visited
         if await state_manager.is_url_visited(link):
+            continue
+
+        # Skip if it appears to be part of a redirect chain
+        redirect_chain = await redirect_tracker.get_redirect_chain(link)
+        if len(redirect_chain) > 1:
+            logger.debug(f"Skipping {link} - already part of a redirect chain")
             continue
 
         # Get priority (lower is higher priority)

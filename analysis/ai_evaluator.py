@@ -220,10 +220,16 @@ async def evaluate_application_page(app_page):
 
             result_text = response.choices[0].message.content.strip()
 
-            # Parse the response with our new function
-            is_actual_application, explanation, application_type, category = (
-                parse_evaluation_response(result_text)
-            )
+            # Parse the response with our new function - fixed to capture all return values
+            (
+                is_actual_application,
+                explanation,
+                application_type,
+                category,
+                external_systems,
+                institution_code,
+                program_code,
+            ) = parse_evaluation_response(result_text)
 
             # Extract external systems from HTML directly
             html_content = app_page.get("html_snippet", "")
@@ -249,6 +255,14 @@ async def evaluate_application_page(app_page):
                 evaluated_entry["external_application_systems"] = application_systems
             else:
                 evaluated_entry["external_application_systems"] = []
+
+            # Add additional fields from AI evaluation
+            if external_systems:
+                evaluated_entry["detected_external_systems"] = external_systems
+            if institution_code:
+                evaluated_entry["institution_code"] = institution_code
+            if program_code:
+                evaluated_entry["program_code"] = program_code
 
             log_prefix = (
                 "✅ ACTUAL APPLICATION"
