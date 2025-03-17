@@ -17,11 +17,11 @@ class Config:
     #
 
     # Updated depth limits
-    MAX_DEPTH = 8  # Reduced from 15 to be more focused
-    MAX_ADMISSION_DEPTH = 15  # Reduced from 20 to balance thoroughness with performance
+    MAX_DEPTH = 6  # Reduced from 15 to be more focused
+    MAX_ADMISSION_DEPTH = 12  # Reduced from 20 to balance thoroughness with performance
 
     # Worker settings
-    NUM_WORKERS = 12  # Increased from 12 to process more URLs concurrently
+    NUM_WORKERS = 18  # Increased from 12 to process more URLs concurrently
 
     # URL limits
     MAX_URLS_PER_DOMAIN = (
@@ -1144,6 +1144,22 @@ class Config:
     DB_PATH = os.path.join(
         os.path.dirname(__file__), "crawler_data.db"
     )  # Database path
+
+    #
+    # Cache Settings
+    #
+
+    # Whether to use request caching
+    USE_CACHE = True
+
+    # Cache expiration time in seconds (24 hours)
+    CACHE_EXPIRE_AFTER = 86400
+
+    # Maximum cache size (in MB)
+    CACHE_MAX_SIZE = 1000  # 1GB
+
+    # Whether to use compression for cached responses
+    CACHE_COMPRESSION = True
 
     #
     # User Agent Settings

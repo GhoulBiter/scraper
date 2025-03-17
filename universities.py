@@ -29,18 +29,18 @@ SEED_UNIVERSITIES = [
     #     "base_url": "https://www.stanford.edu",
     #     "domain": "stanford.edu",
     # },
-    {
-        "id": 6,
-        "name": "Imperial College London",
-        "base_url": "https://www.imperial.ac.uk",
-        "domain": "imperial.ac.uk",
-    },
     # {
-    #     "id": 7,
-    #     "name": "ETH Zurich",
-    #     "base_url": "https://www.ethz.ch",
-    #     "domain": "ethz.ch",
+    #     "id": 6,
+    #     "name": "Imperial College London",
+    #     "base_url": "https://www.imperial.ac.uk",
+    #     "domain": "imperial.ac.uk",
     # },
+    {
+        "id": 7,
+        "name": "ETH Zurich",
+        "base_url": "https://www.ethz.ch",
+        "domain": "ethz.ch",
+    },
     # {
     #     "id": 8,
     #     "name": "National University of Singapore (NUS)",

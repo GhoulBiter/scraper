@@ -159,6 +159,26 @@ def parse_arguments():
         help="Disable incremental checkpoints (process all at once)",
     )
 
+    # Cache options
+    cache_group = parser.add_argument_group("Cache Options")
+    cache_group.add_argument(
+        "--use-cache",
+        action="store_true",
+        default=Config.USE_CACHE,
+        help="Use request caching (default: enabled)",
+    )
+    cache_group.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="Clear the request cache before starting",
+    )
+    cache_group.add_argument(
+        "--cache-expire",
+        type=int,
+        default=Config.CACHE_EXPIRE_AFTER,
+        help=f"Cache expiration time in seconds (default: {Config.CACHE_EXPIRE_AFTER})",
+    )
+
     # Shutdown options
     parser.add_argument(
         "--shutdown-timeout",
@@ -620,7 +640,10 @@ async def main():
                 all_found_applications = await state_manager.get_application_pages()
 
                 # CORRECTION: Fix the result handling to properly handle the list of files
-                saved_files = save_results(evaluated_applications=evaluated_results)
+                saved_files = save_results(
+                    found_applications=all_found_applications,
+                    evaluated_applications=evaluated_results,
+                )
                 logger.success(f"Results saved to {', '.join(saved_files)}")
 
                 # Create a summary file variable for later use
