@@ -1,5 +1,5 @@
 """
-Standardized URL processing and validation utilities
+Improved URL processing with aggressive filtering and depth-based prioritization
 """
 
 import re
@@ -92,6 +92,17 @@ def normalize_url(url):
             if not clean_parts or part != clean_parts[-1]:
                 clean_parts.append(part)
 
+        # Check for suspicious path length (likely a crawler trap)
+        if len(clean_parts) > 10:
+            # Only keep important URL paths in deep URLs
+            if not any(
+                important in "/".join(clean_parts)
+                for important in ["apply", "admission", "undergraduate"]
+            ):
+                # Truncate non-important deep paths
+                clean_parts = clean_parts[:5]
+                logger.debug(f"Truncating suspiciously deep path: {path}")
+
         # Reconstruct the path
         clean_path = "/" + "/".join(clean_parts)
         if not clean_path or clean_path == "/":
@@ -147,36 +158,120 @@ def is_valid_url(url, config_obj=None):
     if any(re.search(pattern, path) for pattern in cfg.EXCLUDED_PATTERNS):
         return False
 
+    # Check for excessive query parameters (often search results or session tracking)
+    if parsed.query and len(parsed.query) > 100:
+        return False
+
+    # Check for suspicious patterns that indicate calendar, pagination, or irrelevant content
+    suspicious_patterns = [
+        r"/calendar/",
+        r"/page/\d+",
+        r"/p/\d+",
+        r"/\d{4}/\d{2}/\d{2}/",  # Date patterns
+        r"/tag/",
+        r"/tags/",
+        r"/author/",
+        r"/user/",
+        r"/users/",
+        r"/comment",
+        r"/comments",
+        r"/attachment",
+        r"/print/",
+        r"/rss",
+        r"/feed",
+    ]
+
+    if any(re.search(pattern, path) for pattern in suspicious_patterns):
+        return False
+
+    # Check for long paths with repeating segments (crawler traps)
+    path_segments = [p for p in path.split("/") if p]
+    if len(path_segments) > 8:
+        # Allow deep paths only if they contain important keywords
+        if not any(
+            keyword in path.lower()
+            for keyword in ["apply", "admission", "freshman", "application"]
+        ):
+            return False
+
+    # Check for duplicate path segments (potential crawler trap)
+    segment_counts = {}
+    for segment in path_segments:
+        segment_counts[segment] = segment_counts.get(segment, 0) + 1
+        if segment_counts[segment] > 2:  # Allow at most 2 occurrences
+            return False
+
     return True
 
 
-def join_url(base, relative):
-    """Safely join a base URL and a relative URL."""
-    try:
-        return urljoin(base, relative)
-    except Exception as e:
-        logger.error(f"Error joining URLs {base} and {relative}: {e}")
-        return None
+def get_url_priority(url, university):
+    """Determine priority for a URL (lower is higher priority)."""
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+    path = parsed.path.lower()
 
+    # Extract path depth for use in prioritization
+    path_depth = len([p for p in path.split("/") if p])
 
-def get_domain_from_url(url):
-    """Extract the domain from a URL."""
-    try:
-        parsed = urlparse(url)
-        return parsed.netloc.lower()
-    except Exception as e:
-        logger.error(f"Error extracting domain from {url}: {e}")
-        return ""
+    # Base priority starts at 10 plus depth penalty
+    base_priority = 10 + path_depth
 
+    # Highest priority: Look for exact application paths (priority 0-1)
+    if any(
+        pattern in path
+        for pattern in [
+            "/apply/first-year",
+            "/apply/freshman",
+            "/admission/apply",
+            "/apply/undergraduate",
+            "/apply/transfer",
+            "/admission/undergraduate",
+        ]
+    ):
+        return 0
 
-def get_path_from_url(url):
-    """Extract the path from a URL."""
-    try:
-        parsed = urlparse(url)
-        return parsed.path.lower()
-    except Exception as e:
-        logger.error(f"Error extracting path from {url}: {e}")
-        return ""
+    # Very high priority: Application forms and portals (priority 1-2)
+    application_indicators = [
+        "/apply$",
+        "/apply/$",
+        "/application$",
+        "/application/$",
+        "/portal",
+        "/admission$",
+        "/admission/$",
+        "/admissions$",
+        "/admissions/$",
+        "/apply-now",
+    ]
+
+    for i, pattern in enumerate(application_indicators):
+        if re.search(pattern, path):
+            return 1 + (i * 0.1)  # Between 1 and 2
+
+    # Second highest: Admission subdomains with application paths (priority 2-3)
+    if ("admission" in domain or "apply" in domain or "undergrad" in domain) and any(
+        p in path
+        for p in ["/apply", "/admission", "/application", "/portal", "/first-year"]
+    ):
+        return 2
+
+    # Third highest: General admission subdomains (priority 3-4)
+    if any(x in domain for x in ["admission", "apply", "undergrad", "freshman"]):
+        return 3
+
+    # Fourth highest: Important paths on any domain (priority 4-6)
+    for i, pattern in enumerate(Config.HIGH_PRIORITY_PATTERNS):
+        if pattern in path:
+            return 4 + (i * 0.1)  # Small increments to maintain ordering of patterns
+
+    # Fifth highest: URLs with application keywords in path (priority 6-8)
+    for i, keyword in enumerate(Config.APPLICATION_KEYWORDS):
+        if keyword in path:
+            return 6 + (i * 0.1)
+
+    # Default priority - consider depth from homepage
+    # Exponential penalty for depth to strongly prefer shallow URLs
+    return base_priority + (path_depth**1.5)
 
 
 def is_related_domain(university_domain, url_domain, university_name):

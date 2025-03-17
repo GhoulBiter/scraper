@@ -488,7 +488,7 @@ async def main():
 
                 # Give workers time to finish current tasks with timeout
                 try:
-                    await asyncio.wait_for(url_queue.join(), timeout=5)
+                    await asyncio.wait_for(url_queue.join(), timeout=180)
                     logger.info("Queue joined successfully")
                 except asyncio.TimeoutError:
                     logger.warning("Timeout waiting for queue to empty")
@@ -525,7 +525,7 @@ async def main():
                 )
                 try:
                     await asyncio.wait_for(
-                        explore_specific_application_paths(), timeout=30
+                        explore_specific_application_paths(), timeout=300
                     )
                 except asyncio.TimeoutError:
                     logger.warning("Timeout exploring application paths")

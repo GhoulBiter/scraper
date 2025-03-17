@@ -37,18 +37,23 @@ class Config:
     # Crawling Settings
     #
 
-    # Depth limits
-    MAX_DEPTH = 15  # Regular crawl depth
-    MAX_ADMISSION_DEPTH = 20  # Deeper crawl for admission-related domains
+    # Updated depth limits
+    MAX_DEPTH = 12  # Reduced from 15 to be more focused
+    MAX_ADMISSION_DEPTH = 15  # Reduced from 20 to balance thoroughness with performance
 
-    # Request settings
-    REQUEST_TIMEOUT = 15  # Seconds
-    REQUEST_DELAY = 1  # Seconds between requests
-    RESPECT_ROBOTS_TXT = True  # Whether to respect robots.txt
+    # Worker settings
+    NUM_WORKERS = 12  # Increased from 12 to process more URLs concurrently
 
     # URL limits
-    MAX_URLS_PER_DOMAIN = 600  # Maximum URLs to crawl per domain
-    MAX_TOTAL_URLS = 2000000  # Maximum total URLs to crawl
+    MAX_URLS_PER_DOMAIN = (
+        500  # Reduced from 600 to focus on fewer, higher quality pages
+    )
+    MAX_TOTAL_URLS = 100000  # Set a reasonable maximum
+
+    # Queue management
+    MAX_QUEUE_SIZE = 10000  # Maximum queue size
+    MAX_URLS_PER_PAGE = 50  # Maximum URLs to extract from a normal page
+    MAX_URLS_PER_ADMISSION_PAGE = 100  # Maximum URLs to extract from an admission page
 
     # Worker settings
     NUM_WORKERS = 12  # Number of concurrent worker tasks
@@ -179,6 +184,69 @@ class Config:
         r"/opportunity",
         r"/visit",
         r"/tour",
+        r"/blog/",
+        r"/blogs/",
+        r"/article/",
+        r"/articles/",
+        r"/press/",
+        r"/pressrelease/",
+        r"/press-release/",
+        r"/media/",
+        r"/story/",
+        r"/stories/",
+        r"/history/",
+        r"/testimonials/",
+        r"/gallery/",
+        r"/photo/",
+        r"/photos/",
+        r"/video/",
+        r"/videos/",
+        r"/podcast/",
+        r"/webinar/",
+        r"/award/",
+        r"/awards/",
+        r"/rankings/",
+        r"/events/",
+        r"/schedule/",
+        r"/calendar/",
+        r"/academic-calendar/",
+        r"/comment/",
+        r"/comments/",
+        r"/user/",
+        r"/users/",
+        r"/profile/",
+        r"/profiles/",
+        r"/staff/",
+        r"/faculty/",
+        r"/department/",
+        r"/departments/",
+        r"/housing/",
+        r"/library/",
+        r"/libraries/",
+        r"/dining/",
+        r"/food/",
+        r"/cafe/",
+        r"/restaurant/",
+        r"/parking/",
+        r"/map/",
+        r"/maps/",
+        r"/directions/",
+        r"/transportation/",
+        r"/bus/",
+        r"/shuttle/",
+        r"/print/",
+        r"/share/",
+        r"/email/",
+        r"/feedback/",
+        r"/help/",
+        r"/faq/",
+        r"/support/",
+        r"/ticket/",
+        r"/tickets/",
+        r"/page/\d+/",
+        r"/p/\d+/",
+        r"/\d{4}/\d{2}/\d{2}/",
+        r"/\d{4}/\d{2}/",
     ]
 
     # File extensions to exclude
@@ -205,6 +273,49 @@ class Config:
         ".mp4",
         ".avi",
         ".mov",
+        # Additional file extensions
+        ".ico",
+        ".tif",
+        ".tiff",
+        ".bmp",
+        ".webp",
+        ".webm",
+        ".ogg",
+        ".ogv",
+        ".oga",
+        ".flv",
+        ".swf",
+        ".xml",
+        ".json",
+        ".csv",
+        ".tsv",
+        ".txt",
+        ".rtf",
+        ".md",
+        ".markdown",
+        ".asp",
+        ".aspx",
+        ".exe",
+        ".bin",
+        ".iso",
+        ".dmg",
+        ".jar",
+        ".war",
+        ".ear",
+        ".class",
+        ".dll",
+        ".so",
+        ".apk",
+        ".ipa",
+        ".epub",
+        ".mobi",
+        ".azw",
+        ".azw3",
+        ".ttf",
+        ".otf",
+        ".woff",
+        ".woff2",
+        ".eot",
     ]
 
     #
@@ -267,6 +378,20 @@ class Config:
 
     # Add How-to-Apply report generation
     GENERATE_HOW_TO_APPLY = True  # Whether to generate focused "How to Apply" report
+
+    # Domain-based rate limiting
+    DOMAIN_RATE_LIMITS = {
+        "default": 1.0,  # Default delay between requests to same domain
+        "max_rate_limit": 5.0,  # Maximum rate limit for any domain
+    }
+
+    # Adaptive discovery based on depth
+    DISCOVERY_LIMITS = {
+        "shallow": 50,  # URLs to extract from depth 0-3
+        "medium": 30,  # URLs to extract from depth 4-6
+        "deep": 15,  # URLs to extract from depth 7+
+        "admission_domain": 100,  # URLs to extract from admission domains
+    }
 
     #
     # Logging Settings

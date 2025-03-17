@@ -104,7 +104,10 @@ async def check_direct_application_path(full_url, domain, session, current_path=
     """Check a specific URL for application content."""
     logger.info(f"Directly checking potential application path: {full_url}")
     try:
-        async with session.get(full_url, timeout=Config.REQUEST_TIMEOUT) as response:
+        # Use a default timeout if REQUEST_TIMEOUT is not defined in Config
+        timeout_value = getattr(Config, "REQUEST_TIMEOUT", 15)  # Default 15 seconds
+
+        async with session.get(full_url, timeout=timeout_value) as response:
             if response.status == 200:
                 html = await response.text()
                 title = extract_title(html)
@@ -185,9 +188,10 @@ async def check_subpaths(base_url, university_name, session):
 
         logger.info(f"Checking application subpath: {full_url}")
         try:
-            async with session.get(
-                full_url, timeout=Config.REQUEST_TIMEOUT
-            ) as response:
+            # Use default timeout if Config.REQUEST_TIMEOUT is not available
+            timeout_value = getattr(Config, "REQUEST_TIMEOUT", 15)
+
+            async with session.get(full_url, timeout=timeout_value) as response:
                 if response.status == 200:
                     html = await response.text()
                     title = extract_title(html)
