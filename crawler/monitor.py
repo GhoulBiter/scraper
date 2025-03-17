@@ -9,8 +9,8 @@ import re
 from loguru import logger
 
 from config import Config
-from analysis.page_analyzer import is_application_page, extract_title
-from models.state_manager import state_manager  # Correct import for state manager
+from analysis.page_analyzer import extract_title, is_application_page
+from models.state_manager import state_manager
 
 
 async def monitor_progress(url_queue):

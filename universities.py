@@ -1,40 +1,40 @@
 SEED_UNIVERSITIES = [
-    {
-        "id": 1,
-        "name": "Massachusetts Institute of Technology (MIT)",
-        "base_url": "https://www.mit.edu",
-        "domain": "mit.edu",
-    },
-    {
-        "id": 2,
-        "name": "University of Cambridge",
-        "base_url": "https://www.cam.ac.uk",
-        "domain": "cam.ac.uk",
-    },
-    {
-        "id": 3,
-        "name": "University of Oxford",
-        "base_url": "https://www.ox.ac.uk",
-        "domain": "ox.ac.uk",
-    },
-    {
-        "id": 4,
-        "name": "Harvard University",
-        "base_url": "https://www.harvard.edu",
-        "domain": "harvard.edu",
-    },
+    # {
+    #     "id": 1,
+    #     "name": "Massachusetts Institute of Technology (MIT)",
+    #     "base_url": "https://www.mit.edu",
+    #     "domain": "mit.edu",
+    # },
+    # {
+    #     "id": 2,
+    #     "name": "University of Cambridge",
+    #     "base_url": "https://www.cam.ac.uk",
+    #     "domain": "cam.ac.uk",
+    # },
+    # {
+    #     "id": 3,
+    #     "name": "University of Oxford",
+    #     "base_url": "https://www.ox.ac.uk",
+    #     "domain": "ox.ac.uk",
+    # },
+    # {
+    #     "id": 4,
+    #     "name": "Harvard University",
+    #     "base_url": "https://www.harvard.edu",
+    #     "domain": "harvard.edu",
+    # },
     # {
     #     "id": 5,
     #     "name": "Stanford University",
     #     "base_url": "https://www.stanford.edu",
     #     "domain": "stanford.edu",
     # },
-    # {
-    #     "id": 6,
-    #     "name": "Imperial College London",
-    #     "base_url": "https://www.imperial.ac.uk",
-    #     "domain": "imperial.ac.uk",
-    # },
+    {
+        "id": 6,
+        "name": "Imperial College London",
+        "base_url": "https://www.imperial.ac.uk",
+        "domain": "imperial.ac.uk",
+    },
     # {
     #     "id": 7,
     #     "name": "ETH Zurich",

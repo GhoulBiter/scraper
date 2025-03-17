@@ -3,9 +3,6 @@ Text encoding detection and conversion utilities
 """
 
 import re
-from urllib.parse import urlparse, quote
-
-import aiohttp
 from loguru import logger
 
 

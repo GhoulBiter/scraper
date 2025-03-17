@@ -5,60 +5,6 @@ This file contains mappings and rules for universities with unique application p
 or those that use specific external application systems.
 """
 
-# Dictionary of known external application systems with their official URLs
-EXTERNAL_APPLICATION_SYSTEMS = {
-    "ucas": {
-        "name": "UCAS (Universities and Colleges Admissions Service)",
-        "url": "https://www.ucas.com/apply",
-        "description": "The central application service for UK undergraduate programs",
-    },
-    "common_app": {
-        "name": "Common Application",
-        "url": "https://apply.commonapp.org/login",
-        "description": "Application platform for over 900 colleges and universities, primarily in the US",
-    },
-    "coalition": {
-        "name": "Coalition Application",
-        "url": "https://app.coalitionforcollegeaccess.org/",
-        "description": "Alternative to Common App, used by about 150 US colleges and universities",
-    },
-    "uc_application": {
-        "name": "University of California Application",
-        "url": "https://apply.universityofcalifornia.edu/my-application/login",
-        "description": "Central application for all University of California campuses",
-    },
-    "cal_state_apply": {
-        "name": "Cal State Apply",
-        "url": "https://www.calstate.edu/apply",
-        "description": "Application portal for all California State University campuses",
-    },
-    "applytexas": {
-        "name": "ApplyTexas",
-        "url": "https://www.applytexas.org/adappc/gen/c_start.WBX",
-        "description": "Application system for Texas public universities and community colleges",
-    },
-    "ouac": {
-        "name": "Ontario Universities' Application Centre",
-        "url": "https://www.ouac.on.ca/apply/",
-        "description": "Central application service for universities in Ontario, Canada",
-    },
-    "uac": {
-        "name": "Universities Admissions Centre (Australia)",
-        "url": "https://www5.uac.edu.au/uacug/",
-        "description": "Central admissions for undergraduate study at participating institutions in NSW and ACT, Australia",
-    },
-    "studylink": {
-        "name": "StudyLink (New Zealand)",
-        "url": "https://www.studylink.govt.nz/apply/",
-        "description": "New Zealand's student loan and allowance application system",
-    },
-    "uni_assist": {
-        "name": "uni-assist (Germany)",
-        "url": "https://www.uni-assist.de/en/how-to-apply/",
-        "description": "Application service for international students applying to German universities",
-    },
-}
-
 # Special case mappings for specific universities and domains
 UNIVERSITY_SPECIAL_CASES = {
     # UK Universities that use UCAS

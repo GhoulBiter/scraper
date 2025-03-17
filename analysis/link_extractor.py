@@ -8,7 +8,7 @@ from urllib.parse import urljoin, urlparse, unquote
 from html.parser import HTMLParser
 from loguru import logger
 
-from utils.url_utils import is_valid_url, normalize_url
+from utils.url_service import is_valid_url, normalize_url
 
 
 class LinkExtractorParser(HTMLParser):

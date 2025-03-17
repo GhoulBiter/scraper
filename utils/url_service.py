@@ -1,13 +1,47 @@
 """
-Improved URL processing with aggressive filtering and depth-based prioritization
+Unified URL processing service to eliminate duplicate functionality
 """
 
+import asyncio
 import re
+import socket
 import urllib.robotparser
-from urllib.parse import urlparse, urljoin, parse_qs, urlencode, quote
+from urllib.parse import urlparse, parse_qs, quote
 
 from loguru import logger
 from config import Config
+
+
+# Global set of failed domains and failure counts
+failed_domains = set()
+domain_failure_counts = {}
+MAX_DOMAIN_FAILURES = 3  # Maximum failures before blacklisting a domain
+
+
+# Add this function to verify domain existence
+async def is_valid_domain(domain):
+    """Check if a domain is valid by performing a DNS lookup."""
+    # Skip check if domain is already known to be invalid
+    if domain in failed_domains:
+        return False
+
+    # Use a thread for the blocking DNS lookup
+    loop = asyncio.get_running_loop()
+    try:
+        # Try to resolve the domain
+        await loop.run_in_executor(None, socket.gethostbyname, domain)
+        return True
+    except socket.gaierror:
+        # Track failure count for this domain
+        domain_failure_counts[domain] = domain_failure_counts.get(domain, 0) + 1
+
+        # If we've failed too many times, add to the blacklist
+        if domain_failure_counts[domain] >= MAX_DOMAIN_FAILURES:
+            logger.warning(
+                f"Blacklisting domain after {MAX_DOMAIN_FAILURES} failures: {domain}"
+            )
+            failed_domains.add(domain)
+        return False
 
 
 def normalize_url(url):
@@ -134,11 +168,9 @@ def normalize_url(url):
         return sanitized[:2000] if len(sanitized) > 2000 else sanitized
 
 
-def is_valid_url(url, config_obj=None):
+def is_valid_url(url):
     """Check if a URL should be crawled based on patterns and extensions."""
     # Use passed config or default to global Config
-    cfg = config_obj or Config
-
     if not url:
         return False
 
@@ -148,40 +180,31 @@ def is_valid_url(url, config_obj=None):
 
     # Parse URL
     parsed = urlparse(url)
+    path = parsed.path.lower()
+    full_url = url.lower()  # For matching patterns in the full URL (domain + path)
 
     # Check for excluded extensions
-    path = parsed.path.lower()
-    if any(path.endswith(ext) for ext in cfg.EXCLUDED_EXTENSIONS):
+    if any(path.endswith(ext) for ext in Config.EXCLUDED_EXTENSIONS):
         return False
 
-    # Check for excluded patterns
-    if any(re.search(pattern, path) for pattern in cfg.EXCLUDED_PATTERNS):
+    # Check for excluded patterns in the path
+    if any(re.search(pattern, path) for pattern in Config.EXCLUDED_PATTERNS):
         return False
+
+    # Check for excluded patterns in the full URL if such a list exists in config
+    if hasattr(Config, "EXCLUDED_FULL_URL_PATTERNS"):
+        if any(
+            re.search(pattern, full_url)
+            for pattern in Config.EXCLUDED_FULL_URL_PATTERNS
+        ):
+            return False
 
     # Check for excessive query parameters (often search results or session tracking)
     if parsed.query and len(parsed.query) > 100:
         return False
 
-    # Check for suspicious patterns that indicate calendar, pagination, or irrelevant content
-    suspicious_patterns = [
-        r"/calendar/",
-        r"/page/\d+",
-        r"/p/\d+",
-        r"/\d{4}/\d{2}/\d{2}/",  # Date patterns
-        r"/tag/",
-        r"/tags/",
-        r"/author/",
-        r"/user/",
-        r"/users/",
-        r"/comment",
-        r"/comments",
-        r"/attachment",
-        r"/print/",
-        r"/rss",
-        r"/feed",
-    ]
-
-    if any(re.search(pattern, path) for pattern in suspicious_patterns):
+    # Check for suspicious patterns using the module-level constant
+    if any(re.search(pattern, path) for pattern in Config.SUSPICIOUS_PATTERNS):
         return False
 
     # Check for long paths with repeating segments (crawler traps)
@@ -189,7 +212,7 @@ def is_valid_url(url, config_obj=None):
     if len(path_segments) > 8:
         # Allow deep paths only if they contain important keywords
         if not any(
-            keyword in path.lower()
+            keyword in path
             for keyword in ["apply", "admission", "freshman", "application"]
         ):
             return False
@@ -217,32 +240,11 @@ def get_url_priority(url, university):
     base_priority = 10 + path_depth
 
     # Highest priority: Look for exact application paths (priority 0-1)
-    if any(
-        pattern in path
-        for pattern in [
-            "/apply/first-year",
-            "/apply/freshman",
-            "/admission/apply",
-            "/apply/undergraduate",
-            "/apply/transfer",
-            "/admission/undergraduate",
-        ]
-    ):
+    if any(pattern in path for pattern in Config.HIGH_PRIORITY_PATTERNS):
         return 0
 
     # Very high priority: Application forms and portals (priority 1-2)
-    application_indicators = [
-        "/apply$",
-        "/apply/$",
-        "/application$",
-        "/application/$",
-        "/portal",
-        "/admission$",
-        "/admission/$",
-        "/admissions$",
-        "/admissions/$",
-        "/apply-now",
-    ]
+    application_indicators = Config.VERY_HIGH_PRIORITY_PATTERNS
 
     for i, pattern in enumerate(application_indicators):
         if re.search(pattern, path):
@@ -337,44 +339,6 @@ def is_related_domain(university_domain, url_domain, university_name):
             return True
 
     return False
-
-
-def get_url_priority(url, university):
-    """Determine priority for a URL (lower is higher priority)."""
-    parsed = urlparse(url)
-    domain = parsed.netloc.lower()
-    path = parsed.path.lower()
-
-    # Highest priority: Look for exact application paths
-    if any(
-        pattern in path
-        for pattern in ["/apply/first-year", "/admission/apply", "/apply/undergraduate"]
-    ):
-        return 0
-
-    # Second highest: Admission subdomains with application paths
-    if ("admission" in domain or "apply" in domain or "undergrad" in domain) and any(
-        p in path
-        for p in ["/apply", "/admission", "/application", "/portal", "/first-year"]
-    ):
-        return 1
-
-    # Third highest: General admission subdomains
-    if any(x in domain for x in ["admission", "apply", "undergrad", "freshman"]):
-        return 2
-
-    # Fourth highest: Important paths on any domain
-    for i, pattern in enumerate(Config.HIGH_PRIORITY_PATTERNS):
-        if pattern in path:
-            return 3 + (i * 0.1)  # Small increments to maintain ordering of patterns
-
-    # Fifth highest: URLs with application keywords in path
-    if any(keyword in path for keyword in Config.APPLICATION_KEYWORDS):
-        return 5
-
-    # Default priority - consider depth from homepage
-    segments = [s for s in path.split("/") if s]
-    return 10 + len(segments)
 
 
 class RobotsChecker:

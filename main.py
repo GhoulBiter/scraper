@@ -20,6 +20,10 @@ import aiohttp
 from loguru import logger
 
 from config import Config
+from output.how_to_apply_report import (
+    export_how_to_apply_csv,
+    generate_how_to_apply_report,
+)
 from utils.logging_config import configure_logging
 from crawler.queue import UniqueURLQueue
 from crawler.worker import start_workers
@@ -30,8 +34,7 @@ from crawler.shutdown import (
     shutdown_controller,
 )
 from analysis.ai_evaluator import evaluate_all_applications, get_api_metrics
-from output.exporter import save_results
-from output.report_generator import ReportGenerator
+from output.exporter import export_to_csv, save_results
 from database.db_operations import (
     init_database,
     start_crawl_run,
@@ -52,6 +55,10 @@ _force_exit_event = threading.Event()
 
 # Global thread pool executor for API calls
 api_executor = ThreadPoolExecutor(max_workers=Config.MAX_CONCURRENT_API_CALLS)
+
+# Before declaring queue empty, wait to see if more URLs are discovered
+consecutive_empty_checks = 0
+EMPTY_THRESHOLD = 3  # Require multiple consecutive empty checks
 
 
 def parse_arguments():
@@ -93,11 +100,6 @@ def parse_arguments():
         "--output-dir",
         default="outputs",
         help="Directory to save outputs (default: outputs)",
-    )
-    parser.add_argument(
-        "--html-report",
-        action="store_true",
-        help="Generate HTML report with visualizations",
     )
     parser.add_argument("--csv", action="store_true", help="Export results to CSV")
 
@@ -195,36 +197,29 @@ def update_config_from_args(args):
 
 
 async def prepare_url_queue(url_queue):
-    """Prepare the URL queue with seed URLs."""
+    """Prepare the URL queue with seed URLs for each university and its admissions subdomains."""
+    # Use the common admission paths list from the Config
     for university in Config.SEED_UNIVERSITIES:
-        # Add the main university domain
-        # Use priority 0 for seed URLs
-        await url_queue.put((0, university["base_url"], Config.MAX_DEPTH, university))
+        # Enqueue the main university URL as a seed (priority 0)
+        main_url = university.get("base_url")
+        if main_url:
+            await url_queue.put((0, main_url, Config.MAX_DEPTH, university))
+            logger.info(f"Added main seed URL: {main_url}")
 
-        # Add known admission subdomains as seeds
-        university_domain = university["domain"]
-        if university_domain in Config.ADMISSION_SUBDOMAINS:
-            for subdomain in Config.ADMISSION_SUBDOMAINS[university_domain]:
-                admission_url = f"https://{subdomain}/"
-                logger.info(f"Adding admission seed URL: {admission_url}")
-                # Use priority 0 for seed URLs
-                await url_queue.put((0, admission_url, Config.MAX_DEPTH, university))
+        # Add known admission subdomains if available for the university's domain
+        university_domain = university.get("domain")
+        admission_subdomains = Config.ADMISSION_SUBDOMAINS.get(university_domain, [])
+        for subdomain in admission_subdomains:
+            # Construct the base admission URL
+            admission_url = f"https://{subdomain}/"
+            await url_queue.put((0, admission_url, Config.MAX_DEPTH, university))
+            logger.info(f"Added admission seed URL: {admission_url}")
 
-                # Add common application paths to these admission domains
-                for path in [
-                    "/apply",
-                    "/first-year",
-                    "/apply/first-year",
-                    "/undergraduate",
-                    "/apply/undergraduate",
-                    "/freshman",
-                    "/admission",
-                    "/admissions",
-                ]:
-                    path_url = f"https://{subdomain}{path}"
-                    logger.info(f"Adding admission path URL: {path_url}")
-                    # Use priority 0 for seed URLs
-                    await url_queue.put((0, path_url, Config.MAX_DEPTH, university))
+            # Enqueue common application paths for this admission subdomain
+            for path in Config.VERY_HIGH_PRIORITY_PATTERNS:
+                path_url = f"https://{subdomain}{path}"
+                await url_queue.put((0, path_url, Config.MAX_DEPTH, university))
+                logger.info(f"Added admission path URL: {path_url}")
 
 
 # Function to force exit after timeout
@@ -272,6 +267,8 @@ async def shutdown_resources():
 
 async def main():
     """Main application function."""
+    global consecutive_empty_checks
+
     # Parse arguments
     args = parse_arguments()
 
@@ -295,13 +292,13 @@ async def main():
         try:
             # Shutdown thread pool executor
             api_executor.shutdown(wait=False)
-            print("Thread pool executor shutdown completed")
+            logger.info("Thread pool executor shutdown completed")
 
             # Note: We can't close the database connection here because it's async
             # Database connections will be closed in the main function's finally block
 
         except Exception as e:
-            print(f"Error during sync resource cleanup: {e}")
+            logger.error(f"Error during sync resource cleanup: {e}")
 
     # Register the synchronous cleanup function with atexit
     atexit.register(shutdown_resources_sync)
@@ -455,8 +452,20 @@ async def main():
                         break
 
                     if url_queue.empty():
-                        logger.info("Queue is empty, crawling complete")
-                        break
+                        consecutive_empty_checks += 1
+                        logger.info(
+                            f"Queue appears empty (check {consecutive_empty_checks}/{EMPTY_THRESHOLD}), waiting to confirm..."
+                        )
+
+                        if consecutive_empty_checks >= EMPTY_THRESHOLD:
+                            logger.info("Queue confirmed empty, crawling complete")
+                            break
+                        else:
+                            # Wait a bit before checking again
+                            await asyncio.sleep(5)
+                            continue
+                    else:
+                        consecutive_empty_checks = 0  # Reset counter if queue has items
 
                     # Check URL limit
                     counters = await state_manager.get_counters()
@@ -610,22 +619,22 @@ async def main():
                 # Use all application pages for original file
                 all_found_applications = await state_manager.get_application_pages()
 
-                original_file, evaluated_file, summary_file = save_results(
-                    all_found_applications,
-                    evaluated_results if evaluated_results else None,
-                    get_api_metrics() if not args.skip_evaluation else None,
-                    output_dir=args.output_dir,
-                )
+                # CORRECTION: Fix the result handling to properly handle the list of files
+                saved_files = save_results(evaluated_applications=evaluated_results)
+                logger.success(f"Results saved to {', '.join(saved_files)}")
 
-                logger.success(f"Results saved to {args.output_dir}")
+                # Create a summary file variable for later use
+                summary_file = None
+                if saved_files and len(saved_files) >= 3:
+                    summary_file = saved_files[
+                        2
+                    ]  # Assuming summary file is the third one
+                else:
+                    summary_file = None
 
                 # Generate "How to Apply" report
                 if evaluated_results and not _force_exit_event.is_set():
                     try:
-                        from output.how_to_apply_report import (
-                            generate_how_to_apply_report,
-                            export_how_to_apply_csv,
-                        )
 
                         md_file = os.path.join(
                             args.output_dir,
@@ -644,29 +653,9 @@ async def main():
                     except Exception as e:
                         logger.error(f"Error generating How to Apply report: {e}")
 
-                # Generate HTML report if requested
-                if (
-                    args.html_report
-                    and evaluated_results
-                    and not _force_exit_event.is_set()
-                ):
-                    try:
-                        report_generator = ReportGenerator(
-                            output_dir=os.path.join(args.output_dir, "reports")
-                        )
-                        report_file = await report_generator.generate_full_report(
-                            evaluated_results,
-                            crawl_stats.__dict__,
-                            get_api_metrics() if not args.skip_evaluation else None,
-                        )
-                        logger.success(f"HTML report generated: {report_file}")
-                    except Exception as e:
-                        logger.error(f"Error generating HTML report: {e}")
-
                 # Export to CSV if requested
                 if args.csv and evaluated_results and not _force_exit_event.is_set():
                     try:
-                        from output.exporter import export_to_csv
 
                         csv_file = os.path.join(
                             args.output_dir,
@@ -734,11 +723,11 @@ if __name__ == "__main__":
         logger.info("Program finished gracefully")
 
     except KeyboardInterrupt:
-        print("\nProgram stopped by user")
+        logger.warning("\nProgram stopped by user")
         # Force exit after keyboard interrupt to ensure termination
         if not _force_exit_event.is_set():
-            print("Forcing program termination...")
+            logger.warning("Forcing program termination...")
             os._exit(0)
     except Exception as e:
-        print(f"Unhandled exception: {e}")
+        logger.error(f"Unhandled exception: {e}")
         sys.exit(1)

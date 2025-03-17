@@ -3,7 +3,6 @@ Logging configuration using Loguru
 """
 
 import sys
-import os
 from loguru import logger
 
 

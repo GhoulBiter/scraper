@@ -7,38 +7,7 @@ from urllib.parse import urlparse
 
 from loguru import logger
 from config import Config
-
-# Dictionary of known application systems with their identifiers
-EXTERNAL_APPLICATION_SYSTEMS = {
-    "ucas": [
-        "ucas.com",
-        "ucas application",
-        "ucas form",
-        "ucas portal",
-        "ucas code",
-        "apply through ucas",
-    ],
-    "common_app": [
-        "commonapp.org",
-        "common app",
-        "common application",
-        "commonapp",
-        "apply via common app",
-    ],
-    "coalition": [
-        "coalitionapp",
-        "coalition application",
-        "coalition for college",
-        "mycoalition",
-    ],
-    "applytexas": ["applytexas", "apply texas"],
-    "cal_state": ["calstate.edu/apply", "cal state apply", "csu apply"],
-    "ouac": ["ouac.on.ca", "ontario universities", "ouac form", "ouac application"],
-    "uac": ["uac.edu.au", "universities admissions centre", "uac application"],
-    "studylink": ["studylink.govt.nz", "study link application"],
-    "uni_assist": ["uni-assist.de", "uniassist", "uni assist application"],
-    "postgrad": ["postgraduateapply", "gradcas", "graduate application system"],
-}
+from models.application_systems import EXTERNAL_APPLICATION_SYSTEMS
 
 
 def extract_title(html):

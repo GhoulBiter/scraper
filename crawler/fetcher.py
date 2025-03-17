@@ -5,6 +5,7 @@ Modified URL fetching implementation with discovery cutoff and link-per-page lim
 import asyncio
 import random
 import re
+import traceback
 from urllib.parse import urljoin, urlparse
 from collections import defaultdict
 
@@ -16,9 +17,10 @@ from utils.encoding import EncodingHandler
 from analysis.page_analyzer import is_application_page, extract_title
 from analysis.link_extractor import extract_links
 from models.state_manager import state_manager
-from utils.url_utils import (
+from utils.url_service import (
     get_url_priority,
     is_related_domain,
+    is_valid_domain,
     normalize_url,
     is_valid_url,
 )
@@ -32,6 +34,9 @@ default_delay = 1.0
 domain_rate_limits = defaultdict(
     lambda: getattr(Config, "REQUEST_DELAY", default_delay)
 )
+
+# Set of failed domains to skip
+failed_domains = set()
 
 
 class RedirectTracker:
@@ -121,7 +126,9 @@ async def get_link_limit(depth, is_admission_domain):
 
 
 async def queue_links(links, depth, university, url_queue):
-    """Queue links for crawling with improved filtering and limits."""
+    """Queue links for crawling with improved filtering, limits, and domain verification."""
+    global failed_domains
+
     # Check URL limit before processing
     max_total_urls = getattr(Config, "MAX_TOTAL_URLS", 100000)  # Default if not defined
     if await state_manager.should_enforce_url_limit(max_total_urls):
@@ -140,6 +147,7 @@ async def queue_links(links, depth, university, url_queue):
 
     # Filter and sort links by priority first
     filtered_links = []
+    domain_verified_cache = {}  # Cache for domain verification results
 
     for link in links:
         # Check if crawler is still running
@@ -154,7 +162,19 @@ async def queue_links(links, depth, university, url_queue):
             break
 
         parsed = urlparse(link)
-        domain = parsed.netloc
+        domain = parsed.netloc.lower()  # Ensure lowercase for consistency
+
+        # Skip already known invalid domains
+        if domain in failed_domains:
+            continue
+
+        # Verify domain exists using cache to avoid repeated checks
+        if domain not in domain_verified_cache:
+            domain_verified_cache[domain] = await is_valid_domain(domain)
+
+        if not domain_verified_cache[domain]:
+            logger.debug(f"Skipping invalid domain: {domain}")
+            continue
 
         # Skip if we've reached the max URLs for a domain
         domain_counts = await state_manager.get_domain_counts()
@@ -403,9 +423,15 @@ async def fetch_url(session, url, depth, university, url_queue):
             logger.info(
                 f"Increased rate limit for domain {domain} to {domain_rate_limits[domain]}s"
             )
-
+    except aiohttp.ServerDisconnectedError:
+        logger.error(f"Server disconnected while fetching {url}")
+        # Increase delay for this domain on disconnect
+        async with domain_lock:
+            domain_rate_limits[domain] = min(domain_rate_limits[domain] * 1.5, 5.0)
     except Exception as e:
         logger.error(f"Unexpected error processing {url}: {e}")
+
+        logger.debug(f"Exception traceback: {traceback.format_exc()}")
 
 
 async def find_critical_application_links(url, html):

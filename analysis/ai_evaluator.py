@@ -10,7 +10,7 @@ from datetime import datetime
 import openai
 from loguru import logger
 
-from analysis.external_system_url_generator import extract_application_system_from_html
+from models.application_systems import detect_application_system
 
 from config import Config
 
@@ -27,6 +27,32 @@ api_metrics = {
     "pages_evaluated": 0,
 }
 api_metrics_lock = asyncio.Lock()
+
+
+def safely_extract_application_systems(app_page):
+    """Safely extract external application systems to prevent string indices errors."""
+    try:
+        html_content = app_page.get("html_snippet", "")
+        university_name = app_page.get("university", "")
+        url = app_page.get("url", "")
+
+        # Safely handle application system detection with error handling
+        try:
+            application_systems = detect_application_system(
+                url=url, html_content=html_content, university_name=university_name
+            )
+
+            # Make sure we return a list, even if a single system was detected
+            if application_systems and not isinstance(application_systems, list):
+                application_systems = [application_systems]
+
+            return application_systems or []
+        except Exception as e:
+            logger.warning(f"Error detecting application systems for {url}: {e}")
+            return []
+    except Exception as e:
+        logger.warning(f"Unexpected error in extract_application_systems: {e}")
+        return []
 
 
 def parse_evaluation_response(result_text):
@@ -152,6 +178,13 @@ async def evaluate_application_page(app_page):
             - Instructions on what happens after submitting an initial application
             - Whether this is for undergraduate or graduate/doctoral programs
 
+            Avoid:
+            - General information about the university, programs, or admissions requirements
+            - Information about financial aid, scholarships, campus life, or student services
+            - Research or academic program information
+            - Dead links, outdated content, or error pages
+            - Special platforms like QuestBridge for special programs, initiatives, or scholarships like in the case of Harvard which uses it but uses Common App for general applications
+
             Your task:
             - Respond with TRUE if this is category 1 or 2 (directly useful for applying)
             - Respond with FALSE if this is category 3 (just information)
@@ -238,14 +271,7 @@ async def evaluate_application_page(app_page):
                 program_code,
             ) = parse_evaluation_response(result_text)
 
-            # Extract external systems from HTML directly
-            html_content = app_page.get("html_snippet", "")
-            university_name = app_page.get("university", "")
-
-            # Use our new function to get application system URLs
-            application_systems = extract_application_system_from_html(
-                html_content, app_page["url"], university_name
-            )
+            application_systems = safely_extract_application_systems(app_page)
 
             # Create evaluated entry
             evaluated_entry = app_page.copy()

@@ -2,7 +2,7 @@
 Utility module for easily retrieving application system URLs
 """
 
-from static_application_urls import get_application_system_url
+from models.application_systems import get_system_url
 
 
 def get_urls_for_university(university_name, systems=None):
@@ -33,7 +33,7 @@ def get_urls_for_university(university_name, systems=None):
     results = {}
 
     for system in systems:
-        system_info = get_application_system_url(system, university_name)
+        system_info = get_system_url(system, university_name)
 
         # Only include systems with a base URL
         if "base_url" in system_info:
@@ -95,7 +95,7 @@ def get_system_url_by_region(university_name, region):
     )  # Default to Common App if region unknown
 
     # Get and return the system URL
-    return get_application_system_url(system, university_name)
+    return get_system_url(system, university_name)
 
 
 def lookup_institution_code(university_name, system="ucas"):
@@ -160,7 +160,7 @@ def print_application_guidance(university_name, system=None):
     """
     if system:
         # Get specific system info
-        system_info = get_application_system_url(system, university_name)
+        system_info = get_system_url(system, university_name)
 
         # Build guidance text
         guidance = f"APPLICATION GUIDANCE FOR {university_name.upper()} VIA {system_info['name'].upper()}\n\n"

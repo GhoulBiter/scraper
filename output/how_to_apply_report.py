@@ -6,12 +6,11 @@ import os
 import csv
 import re
 from datetime import datetime
-from typing import List, Dict, Optional
 from urllib.parse import urlparse
 
 from loguru import logger
+from models.application_systems import EXTERNAL_APPLICATION_SYSTEMS
 from output.special_cases import (
-    EXTERNAL_APPLICATION_SYSTEMS,
     get_special_case_for_university,
     get_special_case_for_domain,
     is_undergraduate_page,
